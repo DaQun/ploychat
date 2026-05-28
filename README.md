@@ -2,6 +2,10 @@
 
 PolyChat 是一个基于 Tauri v2、React 和 TypeScript 的多 AI 对话桌面客户端。它把常用 AI 网页版聚合到一个桌面应用里，每个平台使用独立的系统 WebView 和本地数据目录，方便在侧边栏快速切换和保持登录状态。
 
+![PolyChat 运行截图](docs/images/polychat-doubao.jpg)
+
+上图展示了 PolyChat 的主界面：左侧是应用自己的平台侧边栏，支持搜索、快捷键提示、加载状态和登录分身；右侧是当前平台的原生 WebView。示例中打开的是豆包，页面内容保持平台原有体验，同时可以通过侧边栏快速切换到千问、DeepSeek、ChatGPT 或 Claude。
+
 ## 默认平台
 
 当前默认保留 5 个平台：
