@@ -1,6 +1,6 @@
 {
   "name": "polychat",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "PolyChat - 一站式多 AI 对话桌面客户端,集成豆包、千问、DeepSeek、ChatGPT、Claude 等平台",
   "scripts": {
     "dev": "tauri dev",
