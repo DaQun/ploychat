@@ -816,15 +816,34 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       'cursor:pointer'
     ].join(';');
 
+    let searchTimer = null;
     const runFind = (backward) => {{
       const query = input.value;
       if (!query) return;
       try {{
         window.find(query, false, !!backward, true, false, true, false);
       }} catch (_) {{}}
+      setTimeout(() => {{
+        try {{
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
+        }} catch (_) {{}}
+      }}, 0);
+    }};
+
+    const scheduleFind = (backward) => {{
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {{
+        searchTimer = null;
+        runFind(backward);
+      }}, 180);
     }};
 
     close.addEventListener('click', () => {{
+      if (searchTimer) {{
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }}
       box.style.display = 'none';
       window.getSelection && window.getSelection().removeAllRanges();
     }});
@@ -840,7 +859,7 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
         runFind(event.shiftKey);
       }}
     }}, true);
-    input.addEventListener('input', () => runFind(false));
+    input.addEventListener('input', () => scheduleFind(false));
 
     box.appendChild(input);
     box.appendChild(close);
@@ -856,7 +875,7 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     input.focus();
     input.select();
     if (input.value) {{
-      try {{ window.find(input.value, false, false, true, false, true, false); }} catch (_) {{}}
+      scheduleFind(false);
     }}
   }};
   document.addEventListener('keydown', (event) => {{
