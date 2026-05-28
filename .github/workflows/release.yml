@@ -17,10 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS DMG
+          - name: macOS DMG Apple Silicon
             os: macos-latest
             bundle: dmg
-            artifact-name: polychat-macos-dmg
+            artifact-name: polychat-macos-arm64-dmg
+            artifact-path: src-tauri/target/release/bundle/dmg/*.dmg
+          - name: macOS DMG Intel
+            os: macos-13
+            bundle: dmg
+            artifact-name: polychat-macos-x64-dmg
             artifact-path: src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows NSIS
             os: windows-latest
