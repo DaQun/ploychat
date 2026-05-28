@@ -108,6 +108,11 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   const readyViewIdsRef = useRef<Set<string>>(new Set())
   const recentTabRequestsRef = useRef<Map<string, number>>(new Map())
   const tabCounterRef = useRef(0)
+  const primaryConfigRef = useRef({
+    name: platform.name,
+    url: platform.url,
+    userAgent: platform.userAgent,
+  })
   const [tabs, setTabs] = useState<PlatformTab[]>([
     { id: platform.id, title: platform.name, url: platform.url, primary: true },
   ])
@@ -172,6 +177,45 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
       // Tauri runtime unavailable in plain browser previews.
     }
   }, [getViewBounds])
+
+  useEffect(() => {
+    const previous = primaryConfigRef.current
+    const urlChanged = previous.url !== platform.url
+    const userAgentChanged = previous.userAgent !== platform.userAgent
+    const nameChanged = previous.name !== platform.name
+
+    if (!urlChanged && !userAgentChanged && !nameChanged) return
+
+    primaryConfigRef.current = {
+      name: platform.name,
+      url: platform.url,
+      userAgent: platform.userAgent,
+    }
+
+    setTabs(prev => prev.map(tab =>
+      tab.primary ? { ...tab, title: platform.name, url: platform.url } : tab
+    ))
+
+    if (!urlChanged && !userAgentChanged) return
+
+    if (createdViewIdsRef.current.has(platform.id)) {
+      closePlatformView(platform.id).catch(() => {})
+      createdViewIdsRef.current.delete(platform.id)
+    }
+    readyViewIdsRef.current.delete(platform.id)
+
+    setStates(prev => ({
+      ...prev,
+      [platform.id]: {
+        platformId: platform.id,
+        title: platform.name,
+        canGoBack: false,
+        canGoForward: false,
+        loading: true,
+        url: platform.url,
+      },
+    }))
+  }, [platform.id, platform.name, platform.url, platform.userAgent])
 
   const ensureView = useCallback((tab: PlatformTab) => {
     const bounds = getViewBounds(tab.id) ?? getBounds()

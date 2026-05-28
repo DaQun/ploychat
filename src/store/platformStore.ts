@@ -54,18 +54,15 @@ function saveToStorage<T>(key: string, value: T) {
 }
 
 // 将已存储的平台列表与最新 defaults 合并：
-// 内置平台的 icon/iconType 始终跟随 defaults，其余字段保留用户设置
+// 内置平台补齐 defaults 新增字段，但保留用户在设置中修改过的字段。
 function migratePlatforms(stored: Platform[]): Platform[] {
   const defaultMap = new Map(DEFAULT_PLATFORMS.map(p => [p.id, p]))
   const merged = stored.filter(p => KEEP_PLATFORM_IDS.has(p.id)).map(p => {
     const def = defaultMap.get(p.id)
     if (!def) return p
     return {
+      ...def,
       ...p,
-      url: def.url,
-      icon: def.icon,
-      iconType: def.iconType,
-      order: def.order,
     }
   })
   // 补充 defaults 中存储里没有的新平台

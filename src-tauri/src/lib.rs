@@ -206,6 +206,17 @@ fn is_external_http_navigation(url: &Url, current_url: &str) -> bool {
   url.origin().ascii_serialization() != current_url.origin().ascii_serialization()
 }
 
+fn is_auth_popup_url(url: &Url) -> bool {
+  matches!(
+    url.host_str(),
+    Some("accounts.google.com")
+      | Some("myaccount.google.com")
+      | Some("oauth2.googleapis.com")
+      | Some("anthropic.com")
+      | Some("claude.ai")
+  )
+}
+
 fn open_url_with_system_browser(url: &str) -> Result<(), String> {
   #[cfg(target_os = "macos")]
   let mut command = {
@@ -499,10 +510,25 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       return false;
     }}
   }};
+  const isAuthPopupUrl = (raw) => {{
+    if (!raw) return false;
+    try {{
+      const parsed = new URL(raw, location.href);
+      return [
+        'accounts.google.com',
+        'myaccount.google.com',
+        'oauth2.googleapis.com',
+        'anthropic.com',
+        'claude.ai'
+      ].includes(parsed.hostname);
+    }} catch (_) {{
+      return false;
+    }}
+  }};
   window.open = function(url, target, features) {{
-    // 仅拦截"真正跨域"的窗口打开请求；同源 / about:blank / 协议链接保留原生行为，
-    // 避免破坏 Cloudflare 挑战、OAuth 等依赖 popup 引用的流程。
-    if (url && isExternalUrl(url)) {{
+    // 仅拦截"真正跨域"的普通窗口打开请求；认证弹窗保留原生 popup，
+    // 避免破坏 Google OAuth 这类依赖 window.opener / postMessage 的授权流程。
+    if (url && isExternalUrl(url) && !isAuthPopupUrl(url)) {{
       openInAppTab(url);
       return null;
     }}
@@ -1170,7 +1196,9 @@ fn create_platform_view(
         })
         .unwrap_or_default();
 
-      if is_external_http_navigation(&url, &parent_url) {
+      if is_auth_popup_url(&url) {
+        NewWindowResponse::Allow
+      } else if is_external_http_navigation(&url, &parent_url) {
         emit_open_tab_request(
           &app_for_new_window,
           &storage_for_new_window,

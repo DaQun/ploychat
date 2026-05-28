@@ -15,7 +15,7 @@ export const DEFAULT_PLATFORMS: Platform[] = [
   {
     id: 'qwen',
     name: '千问',
-    url: 'https://chat.qwen.ai/',
+    url: 'https://www.qianwen.com/',
     icon: 'chat.qwen.ai',
     iconType: 'favicon',
     enabled: true,
