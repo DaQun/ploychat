@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::Menu;
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{
   AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, Runtime, Webview,
@@ -762,10 +762,113 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       window.__TAURI_INTERNALS__?.invoke('dispatch_shortcut', Object.assign({{ action }}, extra || {{}}));
     }} catch (_) {{}}
   }};
+  const ensureFindBox = () => {{
+    let box = document.getElementById('__polychat_find_box__');
+    if (box) return box;
+
+    box = document.createElement('div');
+    box.id = '__polychat_find_box__';
+    box.style.cssText = [
+      'position:fixed',
+      'top:12px',
+      'right:12px',
+      'z-index:2147483647',
+      'display:none',
+      'align-items:center',
+      'gap:6px',
+      'height:36px',
+      'padding:6px 8px',
+      'border:1px solid rgba(0,0,0,.18)',
+      'border-radius:8px',
+      'background:rgba(255,255,255,.98)',
+      'box-shadow:0 8px 24px rgba(0,0,0,.18)',
+      'font:13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif'
+    ].join(';');
+
+    const input = document.createElement('input');
+    input.type = 'search';
+    input.placeholder = 'Find';
+    input.autocomplete = 'off';
+    input.style.cssText = [
+      'width:220px',
+      'height:24px',
+      'border:1px solid rgba(0,0,0,.22)',
+      'border-radius:5px',
+      'padding:0 7px',
+      'font:13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+      'outline:none',
+      'color:#111',
+      'background:#fff'
+    ].join(';');
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.title = 'Close';
+    close.style.cssText = [
+      'width:24px',
+      'height:24px',
+      'border:0',
+      'border-radius:5px',
+      'background:transparent',
+      'color:#333',
+      'font:18px/22px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+      'cursor:pointer'
+    ].join(';');
+
+    const runFind = (backward) => {{
+      const query = input.value;
+      if (!query) return;
+      try {{
+        window.find(query, false, !!backward, true, false, true, false);
+      }} catch (_) {{}}
+    }};
+
+    close.addEventListener('click', () => {{
+      box.style.display = 'none';
+      window.getSelection && window.getSelection().removeAllRanges();
+    }});
+    input.addEventListener('keydown', (event) => {{
+      event.stopPropagation();
+      if (event.key === 'Escape') {{
+        event.preventDefault();
+        box.style.display = 'none';
+        return;
+      }}
+      if (event.key === 'Enter') {{
+        event.preventDefault();
+        runFind(event.shiftKey);
+      }}
+    }}, true);
+    input.addEventListener('input', () => runFind(false));
+
+    box.appendChild(input);
+    box.appendChild(close);
+    (document.body || document.documentElement).appendChild(box);
+    return box;
+  }};
+  const openFindBox = () => {{
+    const box = ensureFindBox();
+    const input = box.querySelector('input');
+    const selectedText = String(window.getSelection?.() || '').trim();
+    if (selectedText && selectedText.length <= 120) input.value = selectedText;
+    box.style.display = 'flex';
+    input.focus();
+    input.select();
+    if (input.value) {{
+      try {{ window.find(input.value, false, false, true, false, true, false); }} catch (_) {{}}
+    }}
+  }};
   document.addEventListener('keydown', (event) => {{
     if (!(event.metaKey || event.ctrlKey)) return;
     const rawKey = String(event.key || '');
     const lower = rawKey.toLowerCase();
+    if (lower === 'f') {{
+      event.preventDefault();
+      event.stopPropagation();
+      openFindBox();
+      return;
+    }}
     if (lower === 'q') {{
       event.preventDefault();
       event.stopPropagation();
@@ -1309,9 +1412,7 @@ pub fn run() {
   tauri::Builder::default()
     .manage(PlatformViews::default())
     .setup(|app| {
-      let quit = MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?;
-      let menu = Menu::with_items(app, &[&quit])?;
-      app.set_menu(menu)?;
+      app.set_menu(Menu::default(app.handle())?)?;
       Ok(())
     })
     .on_menu_event(|app, event| {
