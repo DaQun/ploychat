@@ -801,6 +801,36 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       'background:#fff'
     ].join(';');
 
+    const status = document.createElement('span');
+    status.textContent = '0/0';
+    status.style.cssText = [
+      'min-width:34px',
+      'color:#555',
+      'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+      'text-align:center',
+      'white-space:nowrap'
+    ].join(';');
+
+    const makeButton = (text, title) => {{
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = text;
+      button.title = title;
+      button.style.cssText = [
+        'width:24px',
+        'height:24px',
+        'border:0',
+        'border-radius:5px',
+        'background:transparent',
+        'color:#333',
+        'font:15px/22px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+        'cursor:pointer'
+      ].join(';');
+      return button;
+    }};
+    const prev = makeButton('↑', 'Previous');
+    const next = makeButton('↓', 'Next');
+
     const close = document.createElement('button');
     close.type = 'button';
     close.textContent = '×';
@@ -817,18 +847,113 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     ].join(';');
 
     let searchTimer = null;
-    const runFind = (backward) => {{
-      const query = input.value;
-      if (!query) return;
-      try {{
-        window.find(query, false, !!backward, true, false, true, false);
-      }} catch (_) {{}}
+    let matches = [];
+    let activeMatchIndex = -1;
+
+    const restoreInputFocus = () => {{
       setTimeout(() => {{
         try {{
           input.focus();
           input.setSelectionRange(input.value.length, input.value.length);
         }} catch (_) {{}}
       }}, 0);
+    }};
+
+    const updateStatus = () => {{
+      status.textContent = matches.length > 0 ? String(activeMatchIndex + 1) + '/' + String(matches.length) : '0/0';
+    }};
+
+    const unwrapHighlights = () => {{
+      const highlighted = Array.from(document.querySelectorAll('mark.__polychat_find_match__'));
+      for (const mark of highlighted) {{
+        const parent = mark.parentNode;
+        if (!parent) continue;
+        parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
+        parent.normalize();
+      }}
+      matches = [];
+      activeMatchIndex = -1;
+      updateStatus();
+    }};
+
+    const canSearchNode = (node) => {{
+      const parent = node.parentElement;
+      if (!parent) return false;
+      if (parent.closest('#__polychat_find_box__')) return false;
+      const tag = parent.tagName;
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION'].includes(tag)) return false;
+      return Boolean(node.nodeValue && node.nodeValue.trim());
+    }};
+
+    const highlightNode = (node, queryLower) => {{
+      const text = node.nodeValue || '';
+      const textLower = text.toLowerCase();
+      let offset = 0;
+      let hit = textLower.indexOf(queryLower, offset);
+      if (hit < 0) return;
+
+      const fragment = document.createDocumentFragment();
+      while (hit >= 0) {{
+        if (hit > offset) {{
+          fragment.appendChild(document.createTextNode(text.slice(offset, hit)));
+        }}
+        const mark = document.createElement('mark');
+        mark.className = '__polychat_find_match__';
+        mark.textContent = text.slice(hit, hit + queryLower.length);
+        mark.style.cssText = 'background:#ffe66d;color:inherit;padding:0;border-radius:2px;';
+        fragment.appendChild(mark);
+        matches.push(mark);
+        offset = hit + queryLower.length;
+        hit = textLower.indexOf(queryLower, offset);
+      }}
+      if (offset < text.length) {{
+        fragment.appendChild(document.createTextNode(text.slice(offset)));
+      }}
+      node.parentNode && node.parentNode.replaceChild(fragment, node);
+    }};
+
+    const collectMatches = (query) => {{
+      unwrapHighlights();
+      const normalized = String(query || '').trim().toLowerCase();
+      if (!normalized) return;
+      const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {{
+        acceptNode(node) {{
+          return canSearchNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }}
+      }});
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      for (const node of nodes) highlightNode(node, normalized);
+      updateStatus();
+    }};
+
+    const activateMatch = (index) => {{
+      if (!matches.length) {{
+        updateStatus();
+        restoreInputFocus();
+        return;
+      }}
+      if (activeMatchIndex >= 0 && matches[activeMatchIndex]) {{
+        matches[activeMatchIndex].style.background = '#ffe66d';
+        matches[activeMatchIndex].style.outline = 'none';
+      }}
+      activeMatchIndex = (index + matches.length) % matches.length;
+      const match = matches[activeMatchIndex];
+      match.style.background = '#ff9f1c';
+      match.style.outline = '1px solid #d86b00';
+      match.scrollIntoView({{ block: 'center', inline: 'nearest' }});
+      updateStatus();
+      restoreInputFocus();
+    }};
+
+    const runFind = (backward) => {{
+      const query = input.value;
+      collectMatches(query);
+      if (!matches.length) {{
+        restoreInputFocus();
+        return;
+      }}
+      activateMatch(backward ? matches.length - 1 : 0);
     }};
 
     const scheduleFind = (backward) => {{
@@ -845,25 +970,36 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
         searchTimer = null;
       }}
       box.style.display = 'none';
-      window.getSelection && window.getSelection().removeAllRanges();
+      unwrapHighlights();
     }});
+    prev.addEventListener('click', () => activateMatch(activeMatchIndex - 1));
+    next.addEventListener('click', () => activateMatch(activeMatchIndex + 1));
     input.addEventListener('keydown', (event) => {{
       event.stopPropagation();
       if (event.key === 'Escape') {{
         event.preventDefault();
         box.style.display = 'none';
+        unwrapHighlights();
         return;
       }}
       if (event.key === 'Enter') {{
         event.preventDefault();
-        runFind(event.shiftKey);
+        if (!matches.length) {{
+          runFind(event.shiftKey);
+        }} else {{
+          activateMatch(activeMatchIndex + (event.shiftKey ? -1 : 1));
+        }}
       }}
     }}, true);
     input.addEventListener('input', () => scheduleFind(false));
 
     box.appendChild(input);
+    box.appendChild(status);
+    box.appendChild(prev);
+    box.appendChild(next);
     box.appendChild(close);
     (document.body || document.documentElement).appendChild(box);
+    box.__polychatScheduleFind = scheduleFind;
     return box;
   }};
   const openFindBox = () => {{
@@ -875,7 +1011,7 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     input.focus();
     input.select();
     if (input.value) {{
-      scheduleFind(false);
+      box.__polychatScheduleFind && box.__polychatScheduleFind(false);
     }}
   }};
   document.addEventListener('keydown', (event) => {{
