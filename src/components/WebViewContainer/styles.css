@@ -1,0 +1,291 @@
+/* ============================
+   WebView 容器样式
+   ============================ */
+
+.webview-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  z-index: 0;
+}
+
+.webview-container.active {
+  visibility: visible;
+  z-index: 1;
+}
+
+/* 导航栏 */
+.webview-navbar {
+  display: none;
+  align-items: center;
+  height: 44px;
+  padding: 0 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border-color);
+  gap: 8px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 3;
+  -webkit-app-region: no-drag;
+}
+
+.webview-nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.webview-nav-btn {
+  width: 28px;
+  height: 28px;
+  font-size: 11px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.webview-nav-btn.disabled {
+  opacity: 0.3;
+  cursor: default !important;
+  pointer-events: none;
+}
+
+/* 标题 */
+.webview-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.webview-title-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.webview-title-emoji {
+  line-height: 16px;
+}
+
+.webview-title-favicon {
+  position: relative;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.webview-title-fallback {
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.webview-title-img {
+  position: absolute;
+  inset: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.webview-title-img.loaded {
+  opacity: 1;
+}
+
+.webview-title-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 400px;
+}
+
+.webview-loading-dot {
+  font-size: 8px;
+  color: var(--color-primary);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* 操作按钮 */
+.webview-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.webview-tab-select {
+  width: 220px;
+  height: 28px;
+  padding: 0 28px 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  max-width: 24vw;
+}
+
+[data-theme="dark"] .webview-navbar {
+  background: #1e293b;
+}
+
+[data-theme="dark"] .webview-tab-select {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+/* 精简 tab 条：仅多 tab 时显示 */
+.webview-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+
+.webview-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.webview-tab:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.webview-tab.active {
+  background: var(--bg-primary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.webview-tab.primary {
+  font-weight: 600;
+}
+
+.webview-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.webview-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.webview-tab-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text-primary);
+}
+
+.webview-tab-bar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.webview-tab-bar-btn {
+  font-size: 13px !important;
+  width: 26px;
+  height: 26px;
+}
+
+[data-theme="dark"] .webview-tab-bar {
+  background: #1e293b;
+}
+
+[data-theme="dark"] .webview-tab.active {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+[data-theme="dark"] .webview-tab-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* webview 包装器 */
+.webview-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.webview-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  background: var(--bg-primary);
+  pointer-events: none;
+}

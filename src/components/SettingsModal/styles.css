@@ -1,0 +1,373 @@
+/* ============================
+   设置弹窗样式
+   ============================ */
+
+.settings-modal {
+  width: 600px;
+  max-height: 80vh;
+}
+
+.settings-body {
+  padding: 0 !important;
+}
+
+.settings-section {
+  padding: 20px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-section-action {
+  margin-left: auto;
+  padding: 4px 10px !important;
+  font-size: 12px !important;
+}
+
+.settings-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+/* 设置项 */
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+}
+
+.settings-item + .settings-item {
+  border-top: 1px solid var(--border-light);
+}
+
+.settings-item-info {
+  flex: 1;
+}
+
+.settings-item-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.settings-item-desc {
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+
+/* 开关 */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--text-tertiary);
+  border-radius: 22px;
+  transition: background var(--transition-fast);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  top: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: transform var(--transition-fast);
+}
+
+.toggle input:checked + .toggle-slider {
+  background: var(--color-primary);
+}
+
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+}
+
+.toggle-sm {
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-sm .toggle-slider::before {
+  width: 14px;
+  height: 14px;
+}
+
+.toggle-sm input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+}
+
+/* 平台管理列表 */
+.settings-drag-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: -8px 0 12px;
+}
+
+.platform-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.platform-manage-item {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+  border-radius: var(--radius-sm);
+}
+
+.platform-manage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.platform-manage-item:last-child {
+  border-bottom: none;
+}
+
+.platform-manage-item.drag-over {
+  background: var(--bg-tertiary);
+  border-color: var(--color-primary);
+}
+
+.platform-manage-item.dragging {
+  opacity: 0.4;
+}
+
+.platform-manage-item.editing {
+  background: var(--bg-tertiary);
+}
+
+.platform-manage-drag {
+  font-size: 16px;
+  color: var(--text-tertiary);
+  cursor: grab;
+  padding: 0 8px 0 2px;
+  flex-shrink: 0;
+  user-select: none;
+  touch-action: none;
+  line-height: 1;
+}
+
+.platform-manage-drag:hover {
+  color: var(--text-secondary);
+}
+
+.platform-manage-item.dragging .platform-manage-drag {
+  cursor: grabbing;
+}
+
+.platform-manage-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.platform-manage-icon {
+  font-size: 20px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.platform-manage-emoji {
+  line-height: 28px;
+}
+
+.platform-manage-favicon {
+  position: relative;
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.platform-manage-fallback {
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.platform-manage-img {
+  position: absolute;
+  inset: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.platform-manage-img.loaded {
+  opacity: 1;
+}
+
+.platform-manage-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.platform-manage-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.platform-manage-url {
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platform-manage-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.platform-manage-delete {
+  min-width: 28px;
+  font-size: 14px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.platform-manage-clone {
+  font-size: 14px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.platform-manage-clone:hover {
+  color: var(--color-primary) !important;
+}
+
+.platform-manage-delete:hover {
+  color: #ef4444 !important;
+}
+
+/* 关于 */
+.about-info {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+
+.about-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  line-height: 1.6;
+}
+
+/* 设置底部 */
+.settings-footer {
+  justify-content: space-between !important;
+}
+
+/* 行内编辑表单 */
+.platform-manage-edit {
+  font-size: 14px;
+}
+
+.platform-manage-edit.is-active {
+  background: var(--bg-secondary);
+}
+
+.platform-manage-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+}
+
+.platform-manage-edit-error {
+  font-size: 12px;
+  color: var(--color-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.platform-manage-edit-field {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.platform-manage-edit-field > span {
+  text-align: right;
+}
+
+.platform-manage-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
