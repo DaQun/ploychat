@@ -1086,15 +1086,16 @@ fn create_platform_view(
   user_agent: Option<String>,
   storage_id: Option<String>,
 ) -> Result<PlatformState, String> {
-  {
+  if let Some((webview, state)) = {
     let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-    if let Some(view) = views.get(&platform_id) {
-      view
-        .webview
-        .set_bounds(rect_from_bounds(&window, bounds.clone()))
-        .map_err(|err| err.to_string())?;
-      return Ok(get_state_payload(&platform_id, view));
-    }
+    views
+      .get(&platform_id)
+      .map(|view| (view.webview.clone(), get_state_payload(&platform_id, view)))
+  } {
+    webview
+      .set_bounds(rect_from_bounds(&window, bounds.clone()))
+      .map_err(|err| err.to_string())?;
+    return Ok(state);
   }
 
   let parsed_url = Url::parse(&url).map_err(|err| format!("invalid url: {err}"))?;
@@ -1274,15 +1275,22 @@ fn show_platform_view(
   views: tauri::State<'_, PlatformViews>,
   platform_id: String,
 ) -> Result<(), String> {
-  let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-  for (id, view) in views.iter() {
-    if id == &platform_id {
-      view.webview.show().map_err(|err| err.to_string())?;
+  let webviews = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views
+      .iter()
+      .map(|(id, view)| (id == &platform_id, view.webview.clone()))
+      .collect::<Vec<_>>()
+  };
+
+  for (is_active, webview) in webviews {
+    if is_active {
+      webview.show().map_err(|err| err.to_string())?;
       // 把焦点显式交给新显示的 WebView，避免按键事件继续投递到刚被隐藏的 WebView，
       // 否则在 macOS 下连续触发快捷键时会"丢键"。
-      let _ = view.webview.set_focus();
+      let _ = webview.set_focus();
     } else {
-      view.webview.hide().map_err(|err| err.to_string())?;
+      webview.hide().map_err(|err| err.to_string())?;
     }
   }
   Ok(())
@@ -1293,18 +1301,29 @@ fn close_platform_view(
   views: tauri::State<'_, PlatformViews>,
   platform_id: String,
 ) -> Result<(), String> {
-  let mut views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-  if let Some(view) = views.remove(&platform_id) {
-    view.webview.close().map_err(|err| err.to_string())?;
+  let webview = {
+    let mut views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views.remove(&platform_id).map(|view| view.webview)
+  };
+
+  if let Some(webview) = webview {
+    webview.close().map_err(|err| err.to_string())?;
   }
   Ok(())
 }
 
 #[tauri::command]
 fn hide_all_platform_views(views: tauri::State<'_, PlatformViews>) -> Result<(), String> {
-  let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-  for view in views.values() {
-    view.webview.hide().map_err(|err| err.to_string())?;
+  let webviews = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views
+      .values()
+      .map(|view| view.webview.clone())
+      .collect::<Vec<_>>()
+  };
+
+  for webview in webviews {
+    webview.hide().map_err(|err| err.to_string())?;
   }
   Ok(())
 }
@@ -1316,10 +1335,13 @@ fn set_platform_view_bounds(
   platform_id: String,
   bounds: ViewBounds,
 ) -> Result<(), String> {
-  let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-  if let Some(view) = views.get(&platform_id) {
-    view
-      .webview
+  let webview = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views.get(&platform_id).map(|view| view.webview.clone())
+  };
+
+  if let Some(webview) = webview {
+    webview
       .set_bounds(rect_from_bounds(&window, bounds))
       .map_err(|err| err.to_string())?;
   }
@@ -1332,18 +1354,23 @@ fn navigate(
   platform_id: String,
   action: String,
 ) -> Result<(), String> {
-  let mut views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-  let Some(view) = views.get_mut(&platform_id) else {
-    return Ok(());
+  let script = match action.as_str() {
+    "back" => "history.back()",
+    "forward" => "history.forward()",
+    "reload" => "location.reload()",
+    _ => return Err(format!("unknown navigation action: {action}")),
   };
 
-  match action.as_str() {
-    "back" => view.webview.eval("history.back()").map_err(|err| err.to_string())?,
-    "forward" => view.webview.eval("history.forward()").map_err(|err| err.to_string())?,
-    "reload" => view.webview.eval("location.reload()").map_err(|err| err.to_string())?,
-    _ => return Err(format!("unknown navigation action: {action}")),
-  }
-  view.state.loading = true;
+  let webview = {
+    let mut views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    let Some(view) = views.get_mut(&platform_id) else {
+      return Ok(());
+    };
+    view.state.loading = true;
+    view.webview.clone()
+  };
+
+  webview.eval(script).map_err(|err| err.to_string())?;
   Ok(())
 }
 
@@ -1359,14 +1386,14 @@ fn clear_platform_data(
   platform_id: String,
 ) -> Result<(), String> {
   let sanitized_id = sanitize_platform_id(&platform_id);
-  if let Some(view) = views
-    .0
-    .lock()
-    .map_err(|_| "platform view lock poisoned")?
-    .get(&platform_id)
-  {
-    let _ = view.webview.eval("localStorage.clear();sessionStorage.clear();location.reload()");
-    let _ = view.webview.clear_all_browsing_data();
+  let webview = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views.get(&platform_id).map(|view| view.webview.clone())
+  };
+
+  if let Some(webview) = webview {
+    let _ = webview.eval("localStorage.clear();sessionStorage.clear();location.reload()");
+    let _ = webview.clear_all_browsing_data();
   }
 
   let data_dir = app
