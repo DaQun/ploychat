@@ -486,6 +486,60 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
   window.__POLYCHAT_TAB_INTERCEPTOR__ = true;
   const platformId = {platform_id};
   const openerViewId = {opener_view_id};
+  const polyDebugLog = (tag, payload) => {{
+    try {{
+      const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      window.__TAURI_INTERNALS__?.invoke('debug_log', {{ tag: String(tag), payload: text }});
+    }} catch (_) {{}}
+  }};
+  // 修复 macOS WKWebView 拒绝 navigator.clipboard.write 写图片的限制：
+  // 拦截 clipboard.write，如果包含 image/* 就把图片二进制传给 Rust 调原生剪贴板，
+  // 否则让原生 clipboard.write 继续处理（文本场景不变）。
+  try {{
+    const cb = navigator.clipboard;
+    if (cb && cb.write && !cb.__polyImageHook) {{
+      const orig = cb.write.bind(cb);
+      const blobToBase64 = (blob) => new Promise((resolve, reject) => {{
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error || new Error('FileReader error'));
+        reader.onload = () => {{
+          const result = String(reader.result || '');
+          const idx = result.indexOf(',');
+          resolve(idx >= 0 ? result.slice(idx + 1) : result);
+        }};
+        reader.readAsDataURL(blob);
+      }});
+      cb.write = async function(items) {{
+        const list = Array.from(items || []);
+        // 找出第一个 image/* 类型
+        let imageBlob = null;
+        try {{
+          for (const item of list) {{
+            const types = item.types || [];
+            const imageType = types.find(t => /^image\//.test(t));
+            if (imageType && typeof item.getType === 'function') {{
+              imageBlob = await item.getType(imageType);
+              break;
+            }}
+          }}
+        }} catch (_) {{}}
+        if (imageBlob) {{
+          try {{
+            const b64 = await blobToBase64(imageBlob);
+            await window.__TAURI_INTERNALS__?.invoke('copy_image_to_clipboard', {{ dataBase64: b64 }});
+            return undefined; // 让网页以为成功了
+          }} catch (e) {{
+            polyDebugLog('clipboard.image.native.fail', String(e && e.message || e));
+            // native 失败时回退到原生 clipboard.write（多半也会失败，但保持一致行为）
+          }}
+        }}
+        return orig(items);
+      }};
+      cb.__polyImageHook = true;
+    }}
+  }} catch (e) {{
+    polyDebugLog('clipboard.image.hook.install.fail', String(e && e.message || e));
+  }}
   const quitApp = () => {{
     try {{
       window.__TAURI_INTERNALS__?.invoke('quit_app');
@@ -1963,6 +2017,41 @@ fn switch_conversation(
   Ok(())
 }
 
+/// 注入脚本里的诊断 sink：当 clipboard hook 或其它注入逻辑命中错误分支时，
+/// 把上下文打到 stderr 方便排查（只有失败路径调用，正常使用零开销）。
+#[tauri::command]
+fn debug_log(tag: String, payload: String) {
+  eprintln!("[polychat][probe][{}] {}", tag, payload);
+}
+
+/// 把 base64 编码的图片（PNG/JPEG/GIF 等任意 image crate 支持的格式）写入系统剪贴板。
+/// 解决 macOS WKWebView 拒绝 `navigator.clipboard.write(ClipboardItem)` 写图片的限制：
+/// 注入脚本拦截网页 clipboard.write，把图片二进制 base64 后传给本命令，由原生 arboard 写入。
+#[tauri::command]
+fn copy_image_to_clipboard(data_base64: String) -> Result<(), String> {
+  use base64_decode_compat as decode;
+  let bytes = decode(&data_base64).map_err(|e| format!("invalid base64: {e}"))?;
+  // arboard 要求 RGBA8 原始像素，所以先用 image crate 解码再喂进去
+  let img = image::load_from_memory(&bytes).map_err(|e| format!("decode image failed: {e}"))?;
+  let rgba = img.to_rgba8();
+  let (width, height) = rgba.dimensions();
+  let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("clipboard open: {e}"))?;
+  clipboard
+    .set_image(arboard::ImageData {
+      width: width as usize,
+      height: height as usize,
+      bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+    })
+    .map_err(|e| format!("clipboard set_image: {e}"))?;
+  eprintln!(
+    "[polychat] copy_image_to_clipboard ok: {}x{} bytes={}",
+    width,
+    height,
+    bytes.len()
+  );
+  Ok(())
+}
+
 /// 接收来自注入脚本的 blob/data 下载请求。
 /// JS 端拦截了 a[download] 的点击、把内容读成 base64 传过来；
 /// 我们解码后写入系统 Downloads 目录，再发与原生下载同形态的完成事件。
@@ -2174,6 +2263,8 @@ pub fn run() {
       quit_app,
       dispatch_shortcut,
       switch_conversation,
+      debug_log,
+      copy_image_to_clipboard,
       save_download_blob,
       report_download_error
     ])
