@@ -4,7 +4,7 @@ import WebViewContainer from './components/WebViewContainer'
 import AddPlatformModal from './components/AddPlatformModal'
 import SettingsModal from './components/SettingsModal'
 import { usePlatformStore } from './store/platformStore'
-import { hideAllPlatformViews, onDownloadFinished, onShortcut, openExternal, quitApp } from './runtime/desktop'
+import { hideAllPlatformViews, onDownloadFinished, onShortcut, openExternal, quitApp, switchConversation } from './runtime/desktop'
 
 interface DownloadToast {
   id: number
@@ -73,6 +73,13 @@ const App: React.FC = () => {
         return
       }
 
+      if (e.shiftKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+        if (!activePlatformId) return
+        e.preventDefault()
+        switchConversation(activePlatformId, e.code === 'BracketRight' ? 1 : -1).catch(() => {})
+        return
+      }
+
       // Ctrl/Cmd + 1-9 切换平台
       const num = parseInt(e.key)
       if (num >= 1 && num <= 9 && num <= enabledPlatforms.length) {
@@ -82,7 +89,7 @@ const App: React.FC = () => {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [enabledPlatforms, handleSelectPlatform])
+  }, [activePlatformId, enabledPlatforms, handleSelectPlatform])
 
   // 监听原生下载完成事件，弹出 toast 提示
   useEffect(() => {
@@ -118,8 +125,8 @@ const App: React.FC = () => {
   // 通过注入到 WebView 的脚本经 Tauri 事件桥接回来处理快捷键。
   // 用 ref 持有最新值，订阅只在挂载时注册一次，避免 store 更新时反复 unlisten/relisten
   // 产生空窗期导致连按快捷键丢键。
-  const shortcutCtxRef = useRef({ enabledPlatforms, handleSelectPlatform })
-  shortcutCtxRef.current = { enabledPlatforms, handleSelectPlatform }
+  const shortcutCtxRef = useRef({ activePlatformId, enabledPlatforms, handleSelectPlatform })
+  shortcutCtxRef.current = { activePlatformId, enabledPlatforms, handleSelectPlatform }
 
   useEffect(() => {
     const unlistenPromise = onShortcut(event => {
@@ -128,6 +135,11 @@ const App: React.FC = () => {
         const { enabledPlatforms: list, handleSelectPlatform: select } = shortcutCtxRef.current
         if (idx >= 1 && idx <= list.length) {
           select(list[idx - 1].id)
+        }
+      } else if (event.action === 'switch-conversation') {
+        const { activePlatformId: platformId } = shortcutCtxRef.current
+        if (platformId && typeof event.offset === 'number') {
+          switchConversation(platformId, event.offset).catch(() => {})
         }
       }
     })

@@ -62,6 +62,9 @@ npm run tauri:build:dmg  # macOS DMG 打包
 - `navigate` — 通过 JS eval 执行 history.back/forward/reload
 - `clear_platform_data` — 清除 localStorage、sessionStorage、数据目录
 - `open_external` — 调用系统浏览器（macOS: `open`, Win: `cmd start`, Linux: `xdg-open`）
+- `switch_conversation` — 在当前活跃平台 WebView 中执行启发式 DOM 脚本，定位历史会话列表并点击上/下一项（offset ±1）
+
+**菜单 & 快捷键**：`build_app_menu` 在系统默认菜单基础上 append `PolyChat` submenu，注册 `Previous/Next Conversation`（`CmdOrCtrl+Shift+[ / ]`）。菜单事件通过 `polychat-shortcut` 事件桥接到前端 `App.tsx` 的 `onShortcut`，再调用 `switch_conversation`。同样的快捷键判断也注入到每个 WebView 的 keydown 监听里，确保 WebView 焦点时也能响应。
 
 **Tab 拦截**：创建 WebView 时注入 JS，覆盖 `window.open` 并拦截 ctrl/cmd-click，触发 `platform-open-tab-requested` 事件而非新窗口。
 

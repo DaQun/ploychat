@@ -26,7 +26,7 @@ Users can still add, edit, duplicate, disable, remove, or reorder custom platfor
 - **Persistent platform views**: enabled platforms keep their WebView instances alive, reducing reloads when switching.
 - **Persistent login sessions**: platform data is stored under `app_data_dir/platforms/{platform_id}` so each platform keeps its own session by default.
 - **In-platform tabs**: cross-origin popups and external links become in-app tabs, with controls to close the current tab or all secondary tabs.
-- **Keyboard shortcuts**: `Ctrl/Cmd + 1~9` switches platforms, `Ctrl/Cmd + Tab` switches tabs inside the active platform, and `Ctrl/Cmd + Q` quits.
+- **Keyboard shortcuts**: `Ctrl/Cmd + 1~9` switches platforms, `Ctrl/Cmd + Tab` switches tabs inside the active platform, `Ctrl/Cmd + Shift + [ / ]` switches between recent conversations on the active platform, and `Ctrl/Cmd + Q` quits.
 - **Download handling**: native downloads plus page-triggered `a[download]` / Blob downloads are saved to the system Downloads folder with success or failure toasts.
 - **Data cleanup**: clear the active platform's login state and browsing data from the platform toolbar.
 - **Open externally**: open the current page in the system default browser.
@@ -137,6 +137,7 @@ The frontend calls these commands through `src/runtime/desktop.ts`:
 - `get_platform_state`
 - `open_platform_tab`
 - `dispatch_shortcut`
+- `switch_conversation`
 - `save_download_blob`
 - `report_download_error`
 - `quit_app`

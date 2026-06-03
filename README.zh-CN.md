@@ -26,7 +26,7 @@ PolyChat 是一个基于 Tauri v2、React 和 TypeScript 的多 AI 对话桌面�
 - **多平台常驻**：启用的平台会保持 WebView 实例，切换平台时尽量避免页面重载。
 - **登录持久化**：平台数据写入 `app_data_dir/platforms/{platform_id}`，不同平台默认独立保存登录态。
 - **平台内多标签**：跨域新窗口和外部链接会转成应用内标签页，支持关闭当前标签或关闭全部非主标签。
-- **快捷键切换**：`Ctrl/Cmd + 1~9` 切换平台，`Ctrl/Cmd + Tab` 在当前平台的标签页间切换，`Ctrl/Cmd + Q` 退出。
+- **快捷键切换**：`Ctrl/Cmd + 1~9` 切换平台，`Ctrl/Cmd + Tab` 在当前平台的标签页间切换，`Ctrl/Cmd + Shift + [ / ]` 在当前平台的历史会话间切换，`Ctrl/Cmd + Q` 退出。
 - **下载处理**：原生下载和页面 `a[download]` / Blob 下载会保存到系统 Downloads，并显示下载完成或失败提示。
 - **数据清理**：可在平台顶部操作中清除当前平台登录状态和浏览数据。
 - **外部打开**：可把当前页面交给系统默认浏览器打开。
@@ -137,6 +137,7 @@ Tauri bundle 目标配置为 `dmg`、`nsis`、`appimage`、`deb`。
 - `get_platform_state`
 - `open_platform_tab`
 - `dispatch_shortcut`
+- `switch_conversation`
 - `save_download_blob`
 - `report_download_error`
 - `quit_app`

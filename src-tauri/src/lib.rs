@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tauri::menu::Menu;
+use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{
   AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, Runtime, Webview,
@@ -23,6 +23,9 @@ const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Appl
 
 #[cfg(all(unix, not(target_os = "macos")))]
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+const MENU_ID_PREV_CONVERSATION: &str = "polychat-prev-conversation";
+const MENU_ID_NEXT_CONVERSATION: &str = "polychat-next-conversation";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1040,6 +1043,224 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       box.__polychatScheduleFind && box.__polychatScheduleFind(false);
     }}
   }};
+  const EXCLUDED_CONVERSATION_TEXT_RE = /^(new chat|new conversation|新建|新对话|新会话|新聊天|ai 创作|ai创作|云盘|更多|我的创作)$/i;
+  const DATE_GROUP_TEXT_RE = /^\d{{4}}(?:[-/年]\s*)?(?:0?[1-9]|1[0-2])月?$/;
+  const ACTIVE_CLASS_RE = /(?:^|[\s_-])(active|selected|current|is-active|is-selected)(?:$|[\s_-])/;
+  const normalizeConversationText = (text) => String(text || '').replace(/[⋯…]/g, '').replace(/\s+/g, ' ').trim();
+  const isSelectedByStyle = (el) => {{
+    let cursor = el;
+    for (let depth = 0; cursor && depth < 4; depth++, cursor = cursor.parentElement) {{
+      const style = getComputedStyle(cursor);
+      const color = style.backgroundColor || '';
+      const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (!match) continue;
+      const r = Number(match[1]);
+      const g = Number(match[2]);
+      const b = Number(match[3]);
+      if (b > r + 15 && b >= g + 5) return true;
+    }}
+    return false;
+  }};
+  const getCurrentConversationTitles = () => {{
+    const titles = [];
+    const add = (value) => {{
+      const text = normalizeConversationText(value);
+      if (text.length >= 3 && text.length <= 120 && !EXCLUDED_CONVERSATION_TEXT_RE.test(text) && !DATE_GROUP_TEXT_RE.test(text)) {{
+        titles.push(text);
+      }}
+    }};
+    document.querySelectorAll('h1, h2, [class*="title" i]').forEach(el => {{
+      if (el.offsetParent !== null) add(el.textContent);
+    }});
+    add((document.title || '').split(/[|-]/)[0]);
+    return Array.from(new Set(titles));
+  }};
+  const findConversationList = () => {{
+    const findHistoryRoots = () => {{
+      const roots = [];
+      const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+      while (walker.nextNode()) {{
+        const el = walker.currentNode;
+        const text = (el.textContent || '').trim();
+        if (text !== '历史对话' && !/^history$/i.test(text)) continue;
+        let cursor = el.nextElementSibling;
+        while (cursor) {{
+          roots.push(cursor);
+          cursor = cursor.nextElementSibling;
+        }}
+      }}
+      return roots;
+    }};
+    const tiers = [
+      [
+        '[data-testid*="conversation"]',
+        '[data-test-id*="conversation"]',
+        'a[href^="/c/"]',
+        'a[href*="/chat/"]',
+        'a[href*="/conversation/"]',
+        'a[href*="/thread/"]',
+        '[role="listitem"]',
+        '[role="option"]',
+        'a[href]'
+      ],
+      [
+        'nav a[href^="/c/"]',
+        'a[href*="/chat/"]',
+        'a[href*="/conversation/"]',
+        'a[href*="/thread/"]',
+        '[data-testid*="conversation"]',
+        '[data-test-id*="conversation"]'
+      ],
+      [
+        "aside a[href]:not([href='#']):not([href='/'])",
+        'nav[aria-label*="hist" i] a',
+        'nav[aria-label*="chat" i] a',
+        'nav[aria-label*="conversation" i] a',
+        '[role="navigation"] li a'
+      ],
+      [
+        'aside [role="listitem"]',
+        'aside [role="option"]',
+        '[role="list"] [role="listitem"]'
+      ],
+      [
+        'aside [class*="conversation" i] [class*="item" i]',
+        'aside [class*="history" i] [class*="item" i]',
+        'aside [class*="session" i] [class*="item" i]',
+        'aside [class*="chat-item" i]',
+        'aside [class*="conversationItem" i]',
+        'aside [class*="sessionItem" i]',
+        'aside [class*="historyItem" i]',
+        '[class*="sidebar" i] [class*="item" i]:not([class*="new" i])'
+      ]
+    ];
+    const passes = (el) => {{
+      if (!el || el.offsetParent === null) return false;
+      const text = (el.textContent || '').trim();
+      if (!text) return false;
+      if (EXCLUDED_CONVERSATION_TEXT_RE.test(text)) return false;
+      if (DATE_GROUP_TEXT_RE.test(text)) return false;
+      if (el.closest('header, footer')) return false;
+      const href = el.getAttribute && el.getAttribute('href');
+      if (href === '/' || href === '#') return false;
+      return true;
+    }};
+    const uniqueConversationItems = (items) => {{
+      const seen = new Set();
+      const unique = [];
+      for (const item of items) {{
+        const row = item.closest('a[href], [role="listitem"], [role="option"], li') || item;
+        const text = normalizeConversationText(row.textContent);
+        const rect = row.getBoundingClientRect();
+        const key = text + ':' + Math.round(rect.top);
+        if (!text || seen.has(key)) continue;
+        seen.add(key);
+        unique.push(row);
+      }}
+      return unique;
+    }};
+    const historyRoots = findHistoryRoots();
+    for (const root of historyRoots) {{
+      let combined = [];
+      for (const sel of tiers[0]) {{
+        try {{
+          const found = Array.from(root.querySelectorAll(sel));
+          for (const el of found) if (passes(el)) combined.push(el);
+        }} catch (_) {{}}
+      }}
+      combined = uniqueConversationItems(Array.from(new Set(combined)));
+      if (combined.length >= 2) return combined;
+    }}
+    for (const tier of tiers) {{
+      let combined = [];
+      for (const sel of tier) {{
+        try {{
+          const found = Array.from(document.querySelectorAll(sel));
+          for (const el of found) if (passes(el)) combined.push(el);
+        }} catch (_) {{}}
+      }}
+      if (combined.length < 2) continue;
+      combined = uniqueConversationItems(Array.from(new Set(combined)));
+      if (combined.length >= 2) return combined;
+    }}
+    return null;
+  }};
+  const findCurrentIndex = (items) => {{
+    for (let i = 0; i < items.length; i++) {{
+      if (isSelectedByStyle(items[i])) return i;
+    }}
+    const currentTitles = getCurrentConversationTitles();
+    if (currentTitles.length) {{
+      for (let i = 0; i < items.length; i++) {{
+        const text = normalizeConversationText(items[i].textContent);
+        if (text && currentTitles.some(title => text.includes(title) || title.includes(text))) return i;
+      }}
+    }}
+    for (let i = 0; i < items.length; i++) {{
+      const el = items[i];
+      if (el.matches && el.matches('[aria-current], [aria-current="true"], [aria-current="page"], [aria-selected="true"], [data-active="true"]')) return i;
+    }}
+    for (let i = 0; i < items.length; i++) {{
+      const el = items[i];
+      const cls = (el.className && typeof el.className === 'string') ? el.className : '';
+      if (ACTIVE_CLASS_RE.test(cls)) return i;
+      const li = el.closest && el.closest('li, [role="listitem"], [role="option"]');
+      if (li && li !== el) {{
+        const liCls = (li.className && typeof li.className === 'string') ? li.className : '';
+        if (ACTIVE_CLASS_RE.test(liCls)) return i;
+        if (li.matches('[aria-current], [aria-selected="true"], [data-active="true"]')) return i;
+      }}
+    }}
+    const path = location.pathname;
+    for (let i = 0; i < items.length; i++) {{
+      const href = items[i].getAttribute && items[i].getAttribute('href');
+      if (!href) continue;
+      let clean = '';
+      try {{
+        clean = new URL(href, location.href).pathname;
+      }} catch (_) {{
+        clean = href.split('?')[0].split('#')[0];
+      }}
+      if (clean && clean !== '/' && (path === clean || path.startsWith(clean + '/'))) return i;
+    }}
+    return -1;
+  }};
+  window.__polychatSwitchConversationByOffset = (offset) => {{
+    const items = findConversationList();
+    if (!items || items.length < 2) return false;
+    const remembered = window.__polychatLastConversationSwitch;
+    let cur = findCurrentIndex(items);
+    if (
+      remembered &&
+      remembered.length === items.length &&
+      remembered.index >= 0 &&
+      remembered.index < items.length &&
+      Date.now() - remembered.at < 10000
+    ) {{
+      cur = remembered.index;
+    }} else if (remembered && remembered.text && Date.now() - remembered.at < 10000) {{
+      const rememberedText = normalizeConversationText(remembered.text);
+      const rememberedIndex = items.findIndex(item => {{
+        const text = normalizeConversationText(item.textContent);
+        return text === rememberedText || text.includes(rememberedText) || rememberedText.includes(text);
+      }});
+      if (rememberedIndex >= 0) cur = rememberedIndex;
+    }}
+    const next = Number(offset) > 0
+      ? (cur < 0 ? 0 : cur + 1)
+      : (cur < 0 ? 0 : cur - 1);
+    if (next < 0 || next >= items.length) return false;
+    window.__polychatLastConversationSwitch = {{
+      index: next,
+      length: items.length,
+      text: normalizeConversationText(items[next].textContent),
+      at: Date.now()
+    }};
+    try {{ items[next].scrollIntoView({{ block: 'nearest' }}); }} catch (_) {{}}
+    const target = items[next].matches('a, button, [role="button"], [tabindex]') ? items[next] : (items[next].querySelector('a, button, [role="button"], [tabindex]') || items[next]);
+    target.click();
+    return true;
+  }};
   document.addEventListener('keydown', (event) => {{
     if (!(event.metaKey || event.ctrlKey)) return;
     const rawKey = String(event.key || '');
@@ -1068,7 +1289,245 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       dispatchShortcut('switch-tab', {{ offset: event.shiftKey ? -1 : 1 }});
       return;
     }}
+    const isPrevConversationShortcut = event.shiftKey && (event.code === 'BracketLeft' || rawKey === '[' || rawKey === '{{');
+    const isNextConversationShortcut = event.shiftKey && (event.code === 'BracketRight' || rawKey === ']' || rawKey === '}}');
+    if (isPrevConversationShortcut || isNextConversationShortcut) {{
+      if (event.isComposing || event.keyCode === 229) return;
+      const switched = window.__polychatSwitchConversationByOffset(isNextConversationShortcut ? 1 : -1);
+      if (!switched) return;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }}
   }}, true);
+}})();
+"#
+  )
+}
+
+fn conversation_switch_script(offset: i32) -> String {
+  let normalized_offset = if offset >= 0 { 1 } else { -1 };
+  format!(
+    r#"
+(() => {{
+  const offset = {normalized_offset};
+  if (window.__polychatSwitchConversationByOffset?.(offset)) return;
+
+  const EXCLUDED_CONVERSATION_TEXT_RE = /^(new chat|new conversation|新建|新对话|新会话|新聊天|ai 创作|ai创作|云盘|更多|我的创作)$/i;
+  const DATE_GROUP_TEXT_RE = /^\d{{4}}(?:[-/年]\s*)?(?:0?[1-9]|1[0-2])月?$/;
+  const ACTIVE_CLASS_RE = /(?:^|[\s_-])(active|selected|current|is-active|is-selected)(?:$|[\s_-])/;
+  const normalizeConversationText = (text) => String(text || '').replace(/[⋯…]/g, '').replace(/\s+/g, ' ').trim();
+  const isSelectedByStyle = (el) => {{
+    let cursor = el;
+    for (let depth = 0; cursor && depth < 4; depth++, cursor = cursor.parentElement) {{
+      const style = getComputedStyle(cursor);
+      const color = style.backgroundColor || '';
+      const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (!match) continue;
+      const r = Number(match[1]);
+      const g = Number(match[2]);
+      const b = Number(match[3]);
+      if (b > r + 15 && b >= g + 5) return true;
+    }}
+    return false;
+  }};
+  const getCurrentConversationTitles = () => {{
+    const titles = [];
+    const add = (value) => {{
+      const text = normalizeConversationText(value);
+      if (text.length >= 3 && text.length <= 120 && !EXCLUDED_CONVERSATION_TEXT_RE.test(text) && !DATE_GROUP_TEXT_RE.test(text)) {{
+        titles.push(text);
+      }}
+    }};
+    document.querySelectorAll('h1, h2, [class*="title" i]').forEach(el => {{
+      if (el.offsetParent !== null) add(el.textContent);
+    }});
+    add((document.title || '').split(/[|-]/)[0]);
+    return Array.from(new Set(titles));
+  }};
+  const findConversationList = () => {{
+    const findHistoryRoots = () => {{
+      const roots = [];
+      const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+      while (walker.nextNode()) {{
+        const el = walker.currentNode;
+        const text = (el.textContent || '').trim();
+        if (text !== '历史对话' && !/^history$/i.test(text)) continue;
+        let cursor = el.nextElementSibling;
+        while (cursor) {{
+          roots.push(cursor);
+          cursor = cursor.nextElementSibling;
+        }}
+      }}
+      return roots;
+    }};
+    const tiers = [
+      [
+        '[data-testid*="conversation"]',
+        '[data-test-id*="conversation"]',
+        'a[href^="/c/"]',
+        'a[href*="/chat/"]',
+        'a[href*="/conversation/"]',
+        'a[href*="/thread/"]',
+        '[role="listitem"]',
+        '[role="option"]',
+        'a[href]'
+      ],
+      [
+        'nav a[href^="/c/"]',
+        'a[href*="/chat/"]',
+        'a[href*="/conversation/"]',
+        'a[href*="/thread/"]',
+        '[data-testid*="conversation"]',
+        '[data-test-id*="conversation"]'
+      ],
+      [
+        "aside a[href]:not([href='#']):not([href='/'])",
+        'nav[aria-label*="hist" i] a',
+        'nav[aria-label*="chat" i] a',
+        'nav[aria-label*="conversation" i] a',
+        '[role="navigation"] li a'
+      ],
+      [
+        'aside [role="listitem"]',
+        'aside [role="option"]',
+        '[role="list"] [role="listitem"]'
+      ],
+      [
+        'aside [class*="conversation" i] [class*="item" i]',
+        'aside [class*="history" i] [class*="item" i]',
+        'aside [class*="session" i] [class*="item" i]',
+        'aside [class*="chat-item" i]',
+        'aside [class*="conversationItem" i]',
+        'aside [class*="sessionItem" i]',
+        'aside [class*="historyItem" i]',
+        '[class*="sidebar" i] [class*="item" i]:not([class*="new" i])'
+      ]
+    ];
+    const passes = (el) => {{
+      if (!el || el.offsetParent === null) return false;
+      const text = (el.textContent || '').trim();
+      if (!text) return false;
+      if (EXCLUDED_CONVERSATION_TEXT_RE.test(text)) return false;
+      if (DATE_GROUP_TEXT_RE.test(text)) return false;
+      if (el.closest('header, footer')) return false;
+      const href = el.getAttribute && el.getAttribute('href');
+      if (href === '/' || href === '#') return false;
+      return true;
+    }};
+    const uniqueConversationItems = (items) => {{
+      const seen = new Set();
+      const unique = [];
+      for (const item of items) {{
+        const row = item.closest('a[href], [role="listitem"], [role="option"], li') || item;
+        const text = normalizeConversationText(row.textContent);
+        const rect = row.getBoundingClientRect();
+        const key = text + ':' + Math.round(rect.top);
+        if (!text || seen.has(key)) continue;
+        seen.add(key);
+        unique.push(row);
+      }}
+      return unique;
+    }};
+    const historyRoots = findHistoryRoots();
+    for (const root of historyRoots) {{
+      let combined = [];
+      for (const sel of tiers[0]) {{
+        try {{
+          const found = Array.from(root.querySelectorAll(sel));
+          for (const el of found) if (passes(el)) combined.push(el);
+        }} catch (_) {{}}
+      }}
+      combined = uniqueConversationItems(Array.from(new Set(combined)));
+      if (combined.length >= 2) return combined;
+    }}
+    for (const tier of tiers) {{
+      let combined = [];
+      for (const sel of tier) {{
+        try {{
+          const found = Array.from(document.querySelectorAll(sel));
+          for (const el of found) if (passes(el)) combined.push(el);
+        }} catch (_) {{}}
+      }}
+      if (combined.length < 2) continue;
+      combined = uniqueConversationItems(Array.from(new Set(combined)));
+      if (combined.length >= 2) return combined;
+    }}
+    return null;
+  }};
+  const findCurrentIndex = (items) => {{
+    for (let i = 0; i < items.length; i++) {{
+      if (isSelectedByStyle(items[i])) return i;
+    }}
+    const currentTitles = getCurrentConversationTitles();
+    if (currentTitles.length) {{
+      for (let i = 0; i < items.length; i++) {{
+        const text = normalizeConversationText(items[i].textContent);
+        if (text && currentTitles.some(title => text.includes(title) || title.includes(text))) return i;
+      }}
+    }}
+    for (let i = 0; i < items.length; i++) {{
+      const el = items[i];
+      if (el.matches && el.matches('[aria-current], [aria-current="true"], [aria-current="page"], [aria-selected="true"], [data-active="true"]')) return i;
+    }}
+    for (let i = 0; i < items.length; i++) {{
+      const el = items[i];
+      const cls = (el.className && typeof el.className === 'string') ? el.className : '';
+      if (ACTIVE_CLASS_RE.test(cls)) return i;
+      const li = el.closest && el.closest('li, [role="listitem"], [role="option"]');
+      if (li && li !== el) {{
+        const liCls = (li.className && typeof li.className === 'string') ? li.className : '';
+        if (ACTIVE_CLASS_RE.test(liCls)) return i;
+        if (li.matches('[aria-current], [aria-selected="true"], [data-active="true"]')) return i;
+      }}
+    }}
+    const path = location.pathname;
+    for (let i = 0; i < items.length; i++) {{
+      const href = items[i].getAttribute && items[i].getAttribute('href');
+      if (!href) continue;
+      let clean = '';
+      try {{
+        clean = new URL(href, location.href).pathname;
+      }} catch (_) {{
+        clean = href.split('?')[0].split('#')[0];
+      }}
+      if (clean && clean !== '/' && (path === clean || path.startsWith(clean + '/'))) return i;
+    }}
+    return -1;
+  }};
+  const items = findConversationList();
+  if (!items || items.length < 2) return;
+  const remembered = window.__polychatLastConversationSwitch;
+  let cur = findCurrentIndex(items);
+  if (
+    remembered &&
+    remembered.length === items.length &&
+    remembered.index >= 0 &&
+    remembered.index < items.length &&
+    Date.now() - remembered.at < 10000
+  ) {{
+    cur = remembered.index;
+  }} else if (remembered && remembered.text && Date.now() - remembered.at < 10000) {{
+    const rememberedText = normalizeConversationText(remembered.text);
+    const rememberedIndex = items.findIndex(item => {{
+      const text = normalizeConversationText(item.textContent);
+      return text === rememberedText || text.includes(rememberedText) || rememberedText.includes(text);
+    }});
+    if (rememberedIndex >= 0) cur = rememberedIndex;
+  }}
+  const next = offset > 0
+    ? (cur < 0 ? 0 : cur + 1)
+    : (cur < 0 ? 0 : cur - 1);
+  if (next < 0 || next >= items.length) return;
+  window.__polychatLastConversationSwitch = {{
+    index: next,
+    length: items.length,
+    text: normalizeConversationText(items[next].textContent),
+    at: Date.now()
+  }};
+  try {{ items[next].scrollIntoView({{ block: 'nearest' }}); }} catch (_) {{}}
+  const target = items[next].matches('a, button, [role="button"], [tabindex]') ? items[next] : (items[next].querySelector('a, button, [role="button"], [tabindex]') || items[next]);
+  target.click();
 }})();
 "#
   )
@@ -1482,6 +1941,28 @@ fn dispatch_shortcut(
   Ok(())
 }
 
+#[tauri::command]
+fn switch_conversation(
+  views: tauri::State<'_, PlatformViews>,
+  platform_id: String,
+  offset: i32,
+) -> Result<(), String> {
+  eprintln!(
+    "[polychat] switch_conversation: platform={} offset={}",
+    platform_id, offset
+  );
+  let webview = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views.get(&platform_id).map(|view| view.webview.clone())
+  }
+  .ok_or_else(|| format!("platform view not found: {platform_id}"))?;
+
+  webview
+    .eval(conversation_switch_script(offset))
+    .map_err(|err| err.to_string())?;
+  Ok(())
+}
+
 /// 接收来自注入脚本的 blob/data 下载请求。
 /// JS 端拦截了 a[download] 的点击、把内容读成 base64 传过来；
 /// 我们解码后写入系统 Downloads 目录，再发与原生下载同形态的完成事件。
@@ -1618,16 +2099,64 @@ fn base64_decode_compat(s: &str) -> Result<Vec<u8>, String> {
   Ok(out)
 }
 
+fn build_app_menu<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<Menu<R>> {
+  let menu = Menu::default(app.handle())?;
+  let prev_conversation = MenuItem::with_id(
+    app,
+    MENU_ID_PREV_CONVERSATION,
+    "Previous Conversation",
+    true,
+    Some("CmdOrCtrl+Shift+["),
+  )?;
+  let next_conversation = MenuItem::with_id(
+    app,
+    MENU_ID_NEXT_CONVERSATION,
+    "Next Conversation",
+    true,
+    Some("CmdOrCtrl+Shift+]"),
+  )?;
+  let polychat_menu = Submenu::with_id_and_items(
+    app,
+    "polychat-actions",
+    "PolyChat",
+    true,
+    &[&prev_conversation, &next_conversation],
+  )?;
+  menu.append(&polychat_menu)?;
+  Ok(menu)
+}
+
 pub fn run() {
   tauri::Builder::default()
     .manage(PlatformViews::default())
     .setup(|app| {
-      app.set_menu(Menu::default(app.handle())?)?;
+      app.set_menu(build_app_menu(app)?)?;
       Ok(())
     })
     .on_menu_event(|app, event| {
-      if event.id().0 == "quit" {
+      let id = event.id().0.as_str();
+      if id == "quit" {
         app.exit(0);
+      } else if id == MENU_ID_PREV_CONVERSATION {
+        eprintln!("[polychat] menu shortcut switch-conversation offset=-1");
+        let _ = app.emit(
+          "polychat-shortcut",
+          ShortcutEvent {
+            action: "switch-conversation".to_string(),
+            index: None,
+            offset: Some(-1),
+          },
+        );
+      } else if id == MENU_ID_NEXT_CONVERSATION {
+        eprintln!("[polychat] menu shortcut switch-conversation offset=1");
+        let _ = app.emit(
+          "polychat-shortcut",
+          ShortcutEvent {
+            action: "switch-conversation".to_string(),
+            index: None,
+            offset: Some(1),
+          },
+        );
       }
     })
     .invoke_handler(tauri::generate_handler![
@@ -1644,6 +2173,7 @@ pub fn run() {
       open_platform_tab,
       quit_app,
       dispatch_shortcut,
+      switch_conversation,
       save_download_blob,
       report_download_error
     ])

@@ -26,7 +26,7 @@ export interface OpenTabRequest {
 }
 
 export interface ShortcutEvent {
-  action: 'switch-platform' | 'switch-tab' | string
+  action: 'switch-platform' | 'switch-tab' | 'switch-conversation' | string
   index?: number
   offset?: number
 }
@@ -93,6 +93,10 @@ export async function clearPlatformData(platformId: string) {
 
 export async function getPlatformState(platformId: string) {
   return invoke<PlatformViewState>('get_platform_state', { platformId })
+}
+
+export async function switchConversation(platformId: string, offset: number) {
+  return invoke<void>('switch_conversation', { platformId, offset })
 }
 
 export function onPlatformStateChanged(
