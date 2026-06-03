@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "polychat"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "arboard",
  "image 0.24.9",
