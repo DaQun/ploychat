@@ -1,6 +1,6 @@
 [package]
 name = "polychat"
-version = "1.0.10"
+version = "1.0.11"
 description = "Multi-platform AI web client"
 authors = ["PolyChat"]
 edition = "2021"
