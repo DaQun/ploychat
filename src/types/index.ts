@@ -37,3 +37,15 @@ export interface AppConfig {
   /** 是否启用分屏与广播功能（默认关闭） */
   enableSplitView?: boolean
 }
+
+// Prompt 模板（跨平台复用，可含 {{变量}} 占位符）
+export interface PromptTemplate {
+  /** 唯一标识 */
+  id: string
+  /** 模板标题 */
+  title: string
+  /** 模板内容，可含 {{变量名}} 占位符 */
+  content: string
+  /** 创建时间戳 */
+  createdAt: number
+}

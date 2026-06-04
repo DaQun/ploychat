@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Platform, AppConfig } from '../types'
+import type { Platform, AppConfig, PromptTemplate } from '../types'
 import { DEFAULT_PLATFORMS, DEFAULT_CONFIG } from '../config/defaults'
 
 // 本地存储键名
@@ -8,6 +8,7 @@ const STORAGE_KEY_CONFIG = 'polychat-config'
 const STORAGE_KEY_ACTIVE = 'polychat-active-platform'
 const STORAGE_KEY_LAYOUT = 'polychat-layout-mode'
 const STORAGE_KEY_SPLIT = 'polychat-split-platforms'
+const STORAGE_KEY_TEMPLATES = 'polychat-prompt-templates'
 
 export type LayoutMode = 'single' | 'split'
 
@@ -22,6 +23,8 @@ interface PlatformStore {
   layoutMode: LayoutMode
   // 分屏模式下可见的平台 ID 集合（有序=网格顺序）
   splitPlatformIds: string[]
+  // Prompt 模板库
+  promptTemplates: PromptTemplate[]
   // 是否显示添加平台弹窗
   showAddModal: boolean
   // 是否显示设置弹窗
@@ -32,6 +35,8 @@ interface PlatformStore {
   setLayoutMode: (mode: LayoutMode) => void
   toggleSplitPlatform: (id: string) => void
   setSplitPlatformIds: (ids: string[]) => void
+  addPromptTemplate: (title: string, content: string) => void
+  removePromptTemplate: (id: string) => void
   addPlatform: (platform: Platform) => void
   duplicatePlatform: (id: string) => void
   updatePlatform: (id: string, updates: Partial<Platform>) => void
@@ -107,12 +112,16 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
     initialSplitIds = [initialActiveId]
   }
 
+  // 加载 Prompt 模板库
+  const savedTemplates = loadFromStorage<PromptTemplate[]>(STORAGE_KEY_TEMPLATES, [])
+
   return {
     platforms: savedPlatforms,
     config: savedConfig,
     activePlatformId: initialActiveId,
     layoutMode: savedLayout,
     splitPlatformIds: initialSplitIds,
+    promptTemplates: savedTemplates,
     showAddModal: false,
     showSettingsModal: false,
 
@@ -151,6 +160,26 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
     setSplitPlatformIds: (ids) => {
       set({ splitPlatformIds: ids })
       saveToStorage(STORAGE_KEY_SPLIT, ids)
+    },
+
+    addPromptTemplate: (title, content) => {
+      const { promptTemplates } = get()
+      const tpl: PromptTemplate = {
+        id: `tpl_${Date.now()}`,
+        title: title.trim() || '未命名模板',
+        content,
+        createdAt: Date.now(),
+      }
+      const updated = [...promptTemplates, tpl]
+      set({ promptTemplates: updated })
+      saveToStorage(STORAGE_KEY_TEMPLATES, updated)
+    },
+
+    removePromptTemplate: (id) => {
+      const { promptTemplates } = get()
+      const updated = promptTemplates.filter(t => t.id !== id)
+      set({ promptTemplates: updated })
+      saveToStorage(STORAGE_KEY_TEMPLATES, updated)
     },
 
     addPlatform: (platform) => {
@@ -271,12 +300,14 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
         activePlatformId: defaultActiveId,
         layoutMode: 'single',
         splitPlatformIds: defaultSplit,
+        promptTemplates: [],
       })
       saveToStorage(STORAGE_KEY_PLATFORMS, DEFAULT_PLATFORMS)
       saveToStorage(STORAGE_KEY_CONFIG, DEFAULT_CONFIG)
       saveToStorage(STORAGE_KEY_ACTIVE, defaultActiveId)
       saveToStorage(STORAGE_KEY_LAYOUT, 'single')
       saveToStorage(STORAGE_KEY_SPLIT, defaultSplit)
+      saveToStorage(STORAGE_KEY_TEMPLATES, [])
     },
   }
 })
