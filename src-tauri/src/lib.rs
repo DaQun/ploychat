@@ -492,50 +492,51 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       window.__TAURI_INTERNALS__?.invoke('debug_log', {{ tag: String(tag), payload: text }});
     }} catch (_) {{}}
   }};
-  // 修复 macOS WKWebView 拒绝 navigator.clipboard.write 写图片的限制：
-  // 拦截 clipboard.write，如果包含 image/* 就把图片二进制传给 Rust 调原生剪贴板，
-  // 否则让原生 clipboard.write 继续处理（文本场景不变）。
+  // 修复 macOS WKWebView 拒绝 navigator.clipboard.write 写图片的限制。
+  // WKWebView 不允许 ClipboardItem(image/*)，拦截 clipboard.write，把图片二进制
+  // 通过 Tauri 命令交 arboard 写入系统剪贴板。
+  // Windows/Linux 上的 WebView2/WebKitGTK 原生支持图片剪贴板，无需注入 hook。
   try {{
-    const cb = navigator.clipboard;
-    if (cb && cb.write && !cb.__polyImageHook) {{
-      const orig = cb.write.bind(cb);
-      const blobToBase64 = (blob) => new Promise((resolve, reject) => {{
-        const reader = new FileReader();
-        reader.onerror = () => reject(reader.error || new Error('FileReader error'));
-        reader.onload = () => {{
-          const result = String(reader.result || '');
-          const idx = result.indexOf(',');
-          resolve(idx >= 0 ? result.slice(idx + 1) : result);
-        }};
-        reader.readAsDataURL(blob);
-      }});
-      cb.write = async function(items) {{
-        const list = Array.from(items || []);
-        // 找出第一个 image/* 类型
-        let imageBlob = null;
-        try {{
-          for (const item of list) {{
-            const types = item.types || [];
-            const imageType = types.find(t => /^image\//.test(t));
-            if (imageType && typeof item.getType === 'function') {{
-              imageBlob = await item.getType(imageType);
-              break;
+    if (/Mac/.test(navigator.userAgent)) {{
+      const cb = navigator.clipboard;
+      if (cb && cb.write && !cb.__polyImageHook) {{
+        const orig = cb.write.bind(cb);
+        const blobToBase64 = (blob) => new Promise((resolve, reject) => {{
+          const reader = new FileReader();
+          reader.onerror = () => reject(reader.error || new Error('FileReader error'));
+          reader.onload = () => {{
+            const result = String(reader.result || '');
+            const idx = result.indexOf(',');
+            resolve(idx >= 0 ? result.slice(idx + 1) : result);
+          }};
+          reader.readAsDataURL(blob);
+        }});
+        cb.write = async function(items) {{
+          const list = Array.from(items || []);
+          let imageBlob = null;
+          try {{
+            for (const item of list) {{
+              const types = item.types || [];
+              const imageType = types.find(t => /^image\//.test(t));
+              if (imageType && typeof item.getType === 'function') {{
+                imageBlob = await item.getType(imageType);
+                break;
+              }}
+            }}
+          }} catch (_) {{}}
+          if (imageBlob) {{
+            try {{
+              const b64 = await blobToBase64(imageBlob);
+              await window.__TAURI_INTERNALS__?.invoke('copy_image_to_clipboard', {{ dataBase64: b64 }});
+              return undefined;
+            }} catch (e) {{
+              polyDebugLog('clipboard.image.native.fail', String(e && e.message || e));
             }}
           }}
-        }} catch (_) {{}}
-        if (imageBlob) {{
-          try {{
-            const b64 = await blobToBase64(imageBlob);
-            await window.__TAURI_INTERNALS__?.invoke('copy_image_to_clipboard', {{ dataBase64: b64 }});
-            return undefined; // 让网页以为成功了
-          }} catch (e) {{
-            polyDebugLog('clipboard.image.native.fail', String(e && e.message || e));
-            // native 失败时回退到原生 clipboard.write（多半也会失败，但保持一致行为）
-          }}
-        }}
-        return orig(items);
-      }};
-      cb.__polyImageHook = true;
+          return orig(items);
+        }};
+        cb.__polyImageHook = true;
+      }}
     }}
   }} catch (e) {{
     polyDebugLog('clipboard.image.hook.install.fail', String(e && e.message || e));
