@@ -31,6 +31,8 @@ PolyChat 是一个基于 Tauri v2、React 和 TypeScript 的多 AI 对话桌面�
 - **数据清理**：可在平台顶部操作中清除当前平台登录状态和浏览数据。
 - **外部打开**：可把当前页面交给系统默认浏览器打开。
 - **平台管理**：设置窗口支持启用、禁用、编辑 URL、复制登录分身、拖拽排序和恢复默认设置。
+- **分屏与广播**（默认关闭，可在设置中开启）：以网格方式同时并排显示多个平台，并把同一段提问一键广播到所有可见平台（自动填充并发送）。
+- **Prompt 模板库**：把常用提示词存为模板，支持 `{{变量}}` 占位符，在广播框一键选用；选中模板会填入输入框（不直接发送），可再编辑后广播。
 
 ## 快速开始
 
@@ -111,6 +113,7 @@ Tauri bundle 目标配置为 `dmg`、`nsis`、`appimage`、`deb`。
 - `src/components/WebViewContainer/`：创建和同步原生 WebView bounds，处理平台内标签页和导航操作。
 - `src/components/SettingsModal/`：平台和常规配置管理。
 - `src/components/AddPlatformModal/`：添加自定义平台。
+- `src/components/BroadcastInput/`：分屏广播输入框与 Prompt 模板库。
 - `src/store/platformStore.ts`：Zustand 状态管理，并持久化到 `localStorage`。
 - `src/runtime/desktop.ts`：前端调用 Tauri commands 和监听事件的封装。
 
@@ -128,10 +131,12 @@ Tauri bundle 目标配置为 `dmg`、`nsis`、`appimage`、`deb`。
 
 - `create_platform_view`
 - `show_platform_view`
+- `show_platform_views`
 - `hide_all_platform_views`
 - `close_platform_view`
 - `set_platform_view_bounds`
 - `navigate`
+- `fill_platform_input`
 - `open_external`
 - `clear_platform_data`
 - `get_platform_state`
@@ -169,6 +174,7 @@ polychat/
 │   │   └── platformIcons.ts
 │   └── components/
 │       ├── AddPlatformModal/
+│       ├── BroadcastInput/
 │       ├── SettingsModal/
 │       ├── Sidebar/
 │       └── WebViewContainer/

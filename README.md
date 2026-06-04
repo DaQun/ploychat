@@ -31,6 +31,8 @@ Users can still add, edit, duplicate, disable, remove, or reorder custom platfor
 - **Data cleanup**: clear the active platform's login state and browsing data from the platform toolbar.
 - **Open externally**: open the current page in the system default browser.
 - **Platform management**: enable, disable, edit URLs, duplicate login clones, reorder by drag-and-drop, and restore defaults from Settings.
+- **Split-screen & broadcast** (off by default, enable in Settings): view multiple platforms side by side in a grid and broadcast one prompt to all visible platforms at once (auto-fills and submits).
+- **Prompt template library**: save reusable prompts with `{{variable}}` placeholders and insert them into the broadcast box; selecting a template fills the textarea (without sending) so it can be edited before broadcasting.
 
 ## Quick Start
 
@@ -111,6 +113,7 @@ File names prefer the WebView/server suggested download name. If a site only pro
 - `src/components/WebViewContainer/`: creates native WebViews, syncs bounds, and manages in-platform tabs and navigation.
 - `src/components/SettingsModal/`: platform and general app settings.
 - `src/components/AddPlatformModal/`: custom platform creation.
+- `src/components/BroadcastInput/`: split-screen broadcast box and prompt template library.
 - `src/store/platformStore.ts`: Zustand state, persisted to `localStorage`.
 - `src/runtime/desktop.ts`: wrapper for Tauri commands and events.
 
@@ -128,10 +131,12 @@ The frontend calls these commands through `src/runtime/desktop.ts`:
 
 - `create_platform_view`
 - `show_platform_view`
+- `show_platform_views`
 - `hide_all_platform_views`
 - `close_platform_view`
 - `set_platform_view_bounds`
 - `navigate`
+- `fill_platform_input`
 - `open_external`
 - `clear_platform_data`
 - `get_platform_state`
@@ -169,6 +174,7 @@ polychat/
 │   │   └── platformIcons.ts
 │   └── components/
 │       ├── AddPlatformModal/
+│       ├── BroadcastInput/
 │       ├── SettingsModal/
 │       ├── Sidebar/
 │       └── WebViewContainer/

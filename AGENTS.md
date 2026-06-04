@@ -30,6 +30,7 @@ polychat/
 │   └── components/
 │       ├── Sidebar/
 │       ├── WebViewContainer/
+│       ├── BroadcastInput/   # 分屏广播输入框 + Prompt 模板库
 │       ├── AddPlatformModal/
 │       └── SettingsModal/
 ├── src-tauri/
@@ -58,10 +59,12 @@ npm run tauri:build:dmg  # macOS DMG 打包
 **Tauri 命令**（通过 `src/runtime/desktop.ts` 调用）：
 - `create_platform_view` — 创建独立 WebView，数据目录为 `app_data_dir/platforms/{sanitized_id}`
 - `show_platform_view` / `hide_all_platform_views` — 显示/隐藏控制
+- `show_platform_views` — 分屏模式:同时显示多个 WebView(非互斥),其余隐藏
 - `set_platform_view_bounds` — 同步 React 布局到原生 WebView 位置
 - `navigate` — 通过 JS eval 执行 history.back/forward/reload
 - `clear_platform_data` — 清除 localStorage、sessionStorage、数据目录
 - `open_external` — 调用系统浏览器（macOS: `open`, Win: `cmd start`, Linux: `xdg-open`）
+- `fill_platform_input` — 广播填充:按 brand 分派各平台输入框选择器,文本经 `serde_json` 转义后注入(防 JS 注入),填充后延时模拟 Enter 自动发送
 
 **Tab 拦截**：创建 WebView 时注入 JS，覆盖 `window.open` 并拦截 ctrl/cmd-click，触发 `platform-open-tab-requested` 事件而非新窗口。
 
@@ -73,6 +76,7 @@ npm run tauri:build:dmg  # macOS DMG 打包
 2. **App.tsx** 同时渲染所有启用平台的 `WebViewContainer`，用 CSS `display:none/block` 控制显隐（避免切换时重载页面）
 3. **WebViewContainer** 监听 `isActive` prop → 调用 `desktop.ts` Tauri 命令 show/hide 原生 WebView，并用 `ResizeObserver` 同步 bounds
 4. **Tauri 事件** (`platform-state-changed`, `platform-open-tab-requested`) → React 状态更新
+5. **分屏与广播 + 模板库**：store 新增 `layoutMode` / `splitPlatformIds` / `promptTemplates`。分屏时 `App.tsx` 用 CSS grid 布局多个可见 `WebViewContainer` 并统一调 `show_platform_views`;`BroadcastInput` 提供广播输入框与 Prompt 模板库(支持 `{{变量}}` 占位符),经 `fill_platform_input` 注入各平台。整个功能由 `config.enableSplitView` 控制,默认关闭,在设置页开启。
 
 ### 平台图标 (`src/utils/platformIcons.ts`)
 
@@ -81,7 +85,8 @@ npm run tauri:build:dmg  # macOS DMG 打包
 ### 类型定义 (`src/types/index.ts`)
 
 - `Platform`: id / name / url / icon / iconType(`'emoji'|'url'|'favicon'`) / enabled / order / category / description / userAgent / injectScript
-- `AppConfig`: defaultPlatformId / rememberLastPlatform / lastPlatformId / theme / minimizeToTray / enableNotifications
+- `AppConfig`: defaultPlatformId / rememberLastPlatform / lastPlatformId / theme / minimizeToTray / enableNotifications / enableSplitView(分屏与广播开关,默认 false)
+- `PromptTemplate`: id / title / content(可含 `{{变量}}` 占位符) / createdAt
 
 ## 常见任务
 
