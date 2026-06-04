@@ -1810,6 +1810,43 @@ fn show_platform_view(
   Ok(())
 }
 
+/// 分屏模式：同时显示 platform_ids 中的所有 WebView，隐藏其余。
+/// 只把焦点交给集合中的第一个（primary），避免多个 WebView 互相抢焦点。
+#[tauri::command]
+fn show_platform_views(
+  views: tauri::State<'_, PlatformViews>,
+  platform_ids: Vec<String>,
+) -> Result<(), String> {
+  let webviews = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views
+      .iter()
+      .map(|(id, view)| (platform_ids.contains(id), view.webview.clone()))
+      .collect::<Vec<_>>()
+  };
+
+  let primary = platform_ids.first().cloned();
+  let primary_webview = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    primary
+      .as_ref()
+      .and_then(|id| views.get(id).map(|view| view.webview.clone()))
+  };
+
+  for (is_visible, webview) in webviews {
+    if is_visible {
+      webview.show().map_err(|err| err.to_string())?;
+    } else {
+      webview.hide().map_err(|err| err.to_string())?;
+    }
+  }
+
+  if let Some(webview) = primary_webview {
+    let _ = webview.set_focus();
+  }
+  Ok(())
+}
+
 #[tauri::command]
 fn close_platform_view(
   views: tauri::State<'_, PlatformViews>,
@@ -2014,6 +2051,152 @@ fn switch_conversation(
 
   webview
     .eval(conversation_switch_script(offset))
+    .map_err(|err| err.to_string())?;
+  Ok(())
+}
+
+/// 生成「把文本填充进网页输入框」的注入脚本。
+/// `json_text` 必须是已经过 serde_json 编码的安全 JS 字符串字面量（含两端引号）。
+/// 按 brand 选择候选选择器，填充方式根据元素类型自适应：
+///   - textarea / input：用原型 value setter + dispatch input 事件（兼容 React 受控组件）
+///   - contenteditable：focus + 全选 + execCommand('insertText')
+/// 仅填充，不触发发送。找不到元素时调用 debug_log，静默不抛错。
+fn fill_input_script(brand: &str, json_text: &str) -> String {
+  // 每个 brand 的候选选择器（best-effort，从精确到宽松回退）
+  let selectors: &[&str] = match brand {
+    "chatgpt" => &[
+      "#prompt-textarea",
+      "div.ProseMirror[contenteditable=\"true\"]",
+      "[contenteditable=\"true\"]",
+    ],
+    "claude" => &[
+      "div.ProseMirror[contenteditable=\"true\"]",
+      "[contenteditable=\"true\"]",
+    ],
+    "deepseek" => &[
+      "textarea#chat-input",
+      "textarea[placeholder]",
+      "textarea",
+    ],
+    "doubao" => &[
+      "textarea[data-testid*=\"chat_input\"]",
+      "textarea",
+      "[contenteditable=\"true\"]",
+    ],
+    "qwen" => &[
+      "textarea#chat-input",
+      "textarea[placeholder]",
+      "textarea",
+      "[contenteditable=\"true\"]",
+    ],
+    _ => &[
+      "textarea",
+      "[contenteditable=\"true\"]",
+      "input[type=\"text\"]",
+    ],
+  };
+
+  let selectors_js = selectors
+    .iter()
+    .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()))
+    .collect::<Vec<_>>()
+    .join(",");
+
+  let brand_js = serde_json::to_string(brand).unwrap_or_else(|_| "\"\"".to_string());
+
+  format!(
+    r#"(function() {{
+  var text = {json_text};
+  var selectors = [{selectors_js}];
+  var brand = {brand_js};
+  function visible(el) {{ return el && el.offsetParent !== null; }}
+  function pick() {{
+    for (var i = 0; i < selectors.length; i++) {{
+      try {{
+        var list = document.querySelectorAll(selectors[i]);
+        for (var j = 0; j < list.length; j++) {{
+          if (visible(list[j])) return list[j];
+        }}
+      }} catch (e) {{}}
+    }}
+    return null;
+  }}
+  function report(tag) {{
+    try {{
+      window.__TAURI_INTERNALS__.invoke('debug_log', {{ tag: tag, payload: brand }});
+    }} catch (e) {{}}
+  }}
+  function sendEnter(el) {{
+    function fire(type) {{
+      el.dispatchEvent(new KeyboardEvent(type, {{
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+        bubbles: true, cancelable: true
+      }}));
+    }}
+    fire('keydown');
+    fire('keypress');
+    fire('keyup');
+  }}
+  try {{
+    var el = pick();
+    if (!el) {{ report('fill-miss'); return; }}
+    var tag = (el.tagName || '').toLowerCase();
+    var filled = false;
+    if (tag === 'textarea' || tag === 'input') {{
+      var proto = tag === 'textarea'
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      el.focus();
+      setter.call(el, text);
+      el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+      filled = true;
+    }} else if (el.isContentEditable) {{
+      el.focus();
+      var sel = window.getSelection();
+      sel.selectAllChildren(el);
+      var ok = document.execCommand('insertText', false, text);
+      if (!ok) {{
+        el.dispatchEvent(new InputEvent('beforeinput', {{
+          inputType: 'insertText', data: text, bubbles: true, cancelable: true
+        }}));
+      }}
+      filled = true;
+    }} else {{
+      report('fill-unknown-el');
+    }}
+    if (filled) {{
+      // 延时再发送，给 React 受控组件的 value 更新留出时间
+      setTimeout(function() {{
+        try {{ sendEnter(el); }} catch (e) {{ report('send-error'); }}
+      }}, 120);
+    }}
+  }} catch (e) {{
+    report('fill-error');
+  }}
+}})();"#
+  )
+}
+
+/// 广播填充：把 text 填入指定平台 WebView 的输入框（不触发发送）。
+/// brand 用于分派各平台不同的 DOM 选择器（前端显式传入，跨 clone/重定向稳定）。
+#[tauri::command]
+fn fill_platform_input(
+  views: tauri::State<'_, PlatformViews>,
+  platform_id: String,
+  brand: String,
+  text: String,
+) -> Result<(), String> {
+  let webview = {
+    let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+    views.get(&platform_id).map(|view| view.webview.clone())
+  }
+  .ok_or_else(|| format!("platform view not found: {platform_id}"))?;
+
+  // 文本经 serde_json 编码为安全 JS 字符串字面量，杜绝 JS 注入
+  let json_text = serde_json::to_string(&text).map_err(|err| err.to_string())?;
+  webview
+    .eval(fill_input_script(&brand, &json_text))
     .map_err(|err| err.to_string())?;
   Ok(())
 }
@@ -2252,10 +2435,12 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       create_platform_view,
       show_platform_view,
+      show_platform_views,
       close_platform_view,
       hide_all_platform_views,
       set_platform_view_bounds,
       navigate,
+      fill_platform_input,
       open_external,
       clear_platform_data,
       get_platform_state,

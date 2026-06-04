@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import type { Platform } from '../../types'
+import type { LayoutMode } from '../../store/platformStore'
 import { getFaviconCandidates } from '../../utils/platformIcons'
 import './styles.css'
 
@@ -8,7 +9,12 @@ interface SidebarProps {
   activeId: string | null
   loadedIds: Set<string>
   collapsed: boolean
+  layoutMode: LayoutMode
+  splitEnabled: boolean
+  splitIds: string[]
   onSelect: (id: string) => void
+  onToggleLayout: () => void
+  onToggleSplit: (id: string) => void
   onToggleCollapse: () => void
   onSettingsClick: () => void
 }
@@ -135,7 +141,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   activeId,
   loadedIds,
   collapsed,
+  layoutMode,
+  splitEnabled,
+  splitIds,
   onSelect,
+  onToggleLayout,
+  onToggleSplit,
   onToggleCollapse,
   onSettingsClick,
 }) => {
@@ -221,6 +232,37 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
+      {/* 布局切换栏 */}
+      {splitEnabled && (
+      <div className={`sidebar-layout-switch ${collapsed ? 'is-collapsed' : ''}`}>
+        {collapsed ? (
+          <button
+            className={`sidebar-layout-icon ${layoutMode === 'split' ? 'active' : ''}`}
+            onClick={onToggleLayout}
+            title={layoutMode === 'split' ? '切换为单屏' : '切换为分屏'}
+            aria-label={layoutMode === 'split' ? '切换为单屏' : '切换为分屏'}
+          >
+            <span>{layoutMode === 'split' ? '▦' : '▢'}</span>
+          </button>
+        ) : (
+          <div className="sidebar-layout-seg">
+            <button
+              className={`sidebar-layout-seg-btn ${layoutMode === 'single' ? 'active' : ''}`}
+              onClick={() => { if (layoutMode !== 'single') onToggleLayout() }}
+            >
+              单屏
+            </button>
+            <button
+              className={`sidebar-layout-seg-btn ${layoutMode === 'split' ? 'active' : ''}`}
+              onClick={() => { if (layoutMode !== 'split') onToggleLayout() }}
+            >
+              分屏
+            </button>
+          </div>
+        )}
+      </div>
+      )}
+
       {/* 平台列表 */}
       <nav className="sidebar-nav">
         {platforms.length === 0 && !collapsed && (
@@ -236,8 +278,10 @@ const Sidebar: React.FC<SidebarProps> = ({
             {platforms.map((p, index) => (
               <button
                 key={p.id}
-                className={`sidebar-item sidebar-item-compact ${p.id === activeId ? 'active' : ''}`}
-                onClick={() => onSelect(p.id)}
+                className={`sidebar-item sidebar-item-compact ${
+                  (layoutMode === 'split' ? splitIds.includes(p.id) : p.id === activeId) ? 'active' : ''
+                }`}
+                onClick={() => layoutMode === 'split' ? onToggleSplit(p.id) : onSelect(p.id)}
                 title={p.name}
                 data-name={p.name}
               >
@@ -248,7 +292,10 @@ const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           /* 展开模式 */
           <div className="sidebar-item-group">
-            {platforms.map((p, index) => (
+            {platforms.map((p, index) => {
+              const inSplit = splitIds.includes(p.id)
+              const itemActive = layoutMode === 'split' ? inSplit : p.id === activeId
+              return (
               <div
                 key={p.id}
                 className={`sidebar-item-wrapper ${
@@ -260,20 +307,27 @@ const Sidebar: React.FC<SidebarProps> = ({
                 onDragEnd={handleDragEnd}
               >
                 <button
-                  className={`sidebar-item ${p.id === activeId ? 'active' : ''} ${
+                  className={`sidebar-item ${itemActive ? 'active' : ''} ${
                     dragIndex === index ? 'dragging' : ''
                   }`}
-                  onClick={() => onSelect(p.id)}
+                  onClick={() => layoutMode === 'split' ? onToggleSplit(p.id) : onSelect(p.id)}
                   data-name={p.name}
                 >
                   <PlatformIconWithStatus platform={p} loaded={loadedIds.has(p.id)} />
                   <span className="sidebar-item-name">{p.name}</span>
-                  {getShortcut(index) && (
-                    <span className="sidebar-item-shortcut">{getShortcut(index)}</span>
+                  {layoutMode === 'split' ? (
+                    <span className={`sidebar-item-check ${inSplit ? 'checked' : ''}`}>
+                      {inSplit ? '✓' : ''}
+                    </span>
+                  ) : (
+                    getShortcut(index) && (
+                      <span className="sidebar-item-shortcut">{getShortcut(index)}</span>
+                    )
                   )}
                 </button>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </nav>

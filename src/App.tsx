@@ -3,8 +3,9 @@ import Sidebar from './components/Sidebar'
 import WebViewContainer from './components/WebViewContainer'
 import AddPlatformModal from './components/AddPlatformModal'
 import SettingsModal from './components/SettingsModal'
+import BroadcastInput from './components/BroadcastInput'
 import { usePlatformStore } from './store/platformStore'
-import { hideAllPlatformViews, onDownloadFinished, onShortcut, openExternal, quitApp, switchConversation } from './runtime/desktop'
+import { hideAllPlatformViews, onDownloadFinished, onShortcut, openExternal, quitApp, showPlatformViews, switchConversation } from './runtime/desktop'
 
 interface DownloadToast {
   id: number
@@ -17,8 +18,12 @@ const App: React.FC = () => {
   const {
     platforms,
     activePlatformId,
+    layoutMode,
+    splitPlatformIds,
     config,
     setActivePlatform,
+    setLayoutMode,
+    toggleSplitPlatform,
     showAddModal,
     showSettingsModal,
     setShowSettingsModal,
@@ -28,13 +33,26 @@ const App: React.FC = () => {
   const [loadedPlatformIds, setLoadedPlatformIds] = useState<Set<string>>(() => new Set())
   const [downloadToasts, setDownloadToasts] = useState<DownloadToast[]>([])
 
-  // 当前激活的平台
-  const activePlatform = platforms.find(p => p.id === activePlatformId && p.enabled)
-
   // 启用的平台列表
   const enabledPlatforms = platforms
     .filter(p => p.enabled)
     .sort((a, b) => a.order - b.order)
+
+  // 当前可见的平台 ID 集合：分屏取 splitPlatformIds，单屏取活跃平台
+  const enabledIdSet = new Set(enabledPlatforms.map(p => p.id))
+  const modalOpen = showAddModal || showSettingsModal
+  // 分屏功能开关（设置页控制），关闭时强制单屏
+  const splitEnabled = config.enableSplitView ?? false
+  const effectiveLayoutMode = splitEnabled ? layoutMode : 'single'
+  const visibleIds = (
+    effectiveLayoutMode === 'split'
+      ? splitPlatformIds.filter(id => enabledIdSet.has(id))
+      : (activePlatformId && enabledIdSet.has(activePlatformId) ? [activePlatformId] : [])
+  )
+
+  const handleToggleLayout = useCallback(() => {
+    setLayoutMode(layoutMode === 'split' ? 'single' : 'split')
+  }, [layoutMode, setLayoutMode])
 
   // 点击侧边栏平台
   const handleSelectPlatform = useCallback((id: string) => {
@@ -55,11 +73,19 @@ const App: React.FC = () => {
     setSidebarCollapsed(prev => !prev)
   }, [])
 
+  // 统一可见性控制：modal 打开或无可见平台时全部隐藏；
+  // 分屏模式下统一调 showPlatformViews 同时显示多个 view（单屏由容器内部处理）。
+  const visibleKey = visibleIds.join('|')
   useEffect(() => {
-    if (showAddModal || showSettingsModal || !activePlatform) {
+    if (modalOpen || visibleIds.length === 0) {
       hideAllPlatformViews().catch(() => {})
+      return
     }
-  }, [activePlatform, showAddModal, showSettingsModal])
+    if (effectiveLayoutMode === 'split') {
+      showPlatformViews(visibleIds).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleKey, effectiveLayoutMode, modalOpen])
 
   // 键盘快捷键: Ctrl/Cmd + 数字键切换平台，Ctrl/Cmd + Q 退出应用
   useEffect(() => {
@@ -158,23 +184,36 @@ const App: React.FC = () => {
         activeId={activePlatformId}
         loadedIds={loadedPlatformIds}
         collapsed={sidebarCollapsed}
+        layoutMode={effectiveLayoutMode}
+        splitEnabled={splitEnabled}
+        splitIds={splitPlatformIds}
         onSelect={handleSelectPlatform}
+        onToggleLayout={handleToggleLayout}
+        onToggleSplit={toggleSplitPlatform}
         onToggleCollapse={toggleSidebar}
         onSettingsClick={() => setShowSettingsModal(true)}
       />
 
       {/* 主内容区 */}
-      <main className="main-content">
+      <main className={`main-content layout-${effectiveLayoutMode} cols-${Math.min(visibleIds.length, 4)}`}>
         {/* 所有平台始终渲染，用 CSS 控制显隐（切换时 webview 不被销毁） */}
         {enabledPlatforms.length > 0 ? (
-          enabledPlatforms.map(p => (
-            <WebViewContainer
-              key={p.id}
-              platform={p}
-              isActive={p.id === activePlatformId && !showAddModal && !showSettingsModal}
-              onPlatformLoaded={handlePlatformLoaded}
-            />
-          ))
+          <>
+            <div className="webview-grid">
+              {enabledPlatforms.map(p => (
+                <WebViewContainer
+                  key={p.id}
+                  platform={p}
+                  isActive={visibleIds.includes(p.id) && !modalOpen}
+                  multiVisible={effectiveLayoutMode === 'split'}
+                  onPlatformLoaded={handlePlatformLoaded}
+                />
+              ))}
+            </div>
+            {effectiveLayoutMode === 'split' && (
+              <BroadcastInput visibleIds={visibleIds} platforms={enabledPlatforms} />
+            )}
+          </>
         ) : (
           <div className="empty-state">
             <div className="empty-state-icon">🤖</div>

@@ -61,4 +61,5 @@ export const DEFAULT_CONFIG: AppConfig = {
   lastPlatformId: undefined,
   theme: 'system',
   minimizeToTray: false,
+  enableSplitView: false,
 }

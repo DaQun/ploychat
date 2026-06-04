@@ -6,6 +6,10 @@ import { DEFAULT_PLATFORMS, DEFAULT_CONFIG } from '../config/defaults'
 const STORAGE_KEY_PLATFORMS = 'polychat-platforms'
 const STORAGE_KEY_CONFIG = 'polychat-config'
 const STORAGE_KEY_ACTIVE = 'polychat-active-platform'
+const STORAGE_KEY_LAYOUT = 'polychat-layout-mode'
+const STORAGE_KEY_SPLIT = 'polychat-split-platforms'
+
+export type LayoutMode = 'single' | 'split'
 
 interface PlatformStore {
   // 平台列表
@@ -14,6 +18,10 @@ interface PlatformStore {
   config: AppConfig
   // 当前激活的平台 ID
   activePlatformId: string | null
+  // 布局模式：单屏 / 分屏
+  layoutMode: LayoutMode
+  // 分屏模式下可见的平台 ID 集合（有序=网格顺序）
+  splitPlatformIds: string[]
   // 是否显示添加平台弹窗
   showAddModal: boolean
   // 是否显示设置弹窗
@@ -21,6 +29,9 @@ interface PlatformStore {
 
   // 操作
   setActivePlatform: (id: string) => void
+  setLayoutMode: (mode: LayoutMode) => void
+  toggleSplitPlatform: (id: string) => void
+  setSplitPlatformIds: (ids: string[]) => void
   addPlatform: (platform: Platform) => void
   duplicatePlatform: (id: string) => void
   updatePlatform: (id: string, updates: Partial<Platform>) => void
@@ -87,16 +98,59 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
     initialActiveId = savedPlatforms.find(p => p.enabled)?.id ?? null
   }
 
+  // 加载布局模式与分屏集合
+  const savedLayout = loadFromStorage<LayoutMode>(STORAGE_KEY_LAYOUT, 'single')
+  const enabledIdSet = new Set(savedPlatforms.filter(p => p.enabled).map(p => p.id))
+  const rawSplit = loadFromStorage<string[]>(STORAGE_KEY_SPLIT, [])
+  let initialSplitIds = rawSplit.filter(id => enabledIdSet.has(id))
+  if (initialSplitIds.length === 0 && initialActiveId) {
+    initialSplitIds = [initialActiveId]
+  }
+
   return {
     platforms: savedPlatforms,
     config: savedConfig,
     activePlatformId: initialActiveId,
+    layoutMode: savedLayout,
+    splitPlatformIds: initialSplitIds,
     showAddModal: false,
     showSettingsModal: false,
 
     setActivePlatform: (id) => {
       set({ activePlatformId: id })
       saveToStorage(STORAGE_KEY_ACTIVE, id)
+    },
+
+    setLayoutMode: (mode) => {
+      const { splitPlatformIds, activePlatformId } = get()
+      // 切到分屏时若集合为空，用当前活跃平台 seed
+      let nextSplit = splitPlatformIds
+      if (mode === 'split' && nextSplit.length === 0 && activePlatformId) {
+        nextSplit = [activePlatformId]
+        set({ splitPlatformIds: nextSplit })
+        saveToStorage(STORAGE_KEY_SPLIT, nextSplit)
+      }
+      set({ layoutMode: mode })
+      saveToStorage(STORAGE_KEY_LAYOUT, mode)
+    },
+
+    toggleSplitPlatform: (id) => {
+      const { splitPlatformIds } = get()
+      let updated: string[]
+      if (splitPlatformIds.includes(id)) {
+        // 防止移除到空集合
+        if (splitPlatformIds.length <= 1) return
+        updated = splitPlatformIds.filter(x => x !== id)
+      } else {
+        updated = [...splitPlatformIds, id]
+      }
+      set({ splitPlatformIds: updated })
+      saveToStorage(STORAGE_KEY_SPLIT, updated)
+    },
+
+    setSplitPlatformIds: (ids) => {
+      set({ splitPlatformIds: ids })
+      saveToStorage(STORAGE_KEY_SPLIT, ids)
     },
 
     addPlatform: (platform) => {
@@ -141,19 +195,22 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
     },
 
     removePlatform: (id) => {
-      const { platforms, activePlatformId } = get()
+      const { platforms, activePlatformId, splitPlatformIds } = get()
       const updated = platforms.filter(p => p.id !== id)
       let newActiveId = activePlatformId
       if (activePlatformId === id) {
         newActiveId = updated.find(p => p.enabled)?.id ?? null
       }
-      set({ platforms: updated, activePlatformId: newActiveId })
+      let newSplit = splitPlatformIds.filter(x => x !== id)
+      if (newSplit.length === 0 && newActiveId) newSplit = [newActiveId]
+      set({ platforms: updated, activePlatformId: newActiveId, splitPlatformIds: newSplit })
       saveToStorage(STORAGE_KEY_PLATFORMS, updated)
       saveToStorage(STORAGE_KEY_ACTIVE, newActiveId)
+      saveToStorage(STORAGE_KEY_SPLIT, newSplit)
     },
 
     togglePlatform: (id) => {
-      const { platforms, activePlatformId } = get()
+      const { platforms, activePlatformId, splitPlatformIds } = get()
       const updated = platforms.map(p =>
         p.id === id ? { ...p, enabled: !p.enabled } : p
       )
@@ -163,9 +220,16 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
       if (id === activePlatformId && toggled && !toggled.enabled) {
         newActiveId = updated.find(p => p.enabled)?.id ?? null
       }
-      set({ platforms: updated, activePlatformId: newActiveId })
+      // 禁用的平台同步移出分屏集合
+      let newSplit = splitPlatformIds
+      if (toggled && !toggled.enabled) {
+        newSplit = splitPlatformIds.filter(x => x !== id)
+        if (newSplit.length === 0 && newActiveId) newSplit = [newActiveId]
+      }
+      set({ platforms: updated, activePlatformId: newActiveId, splitPlatformIds: newSplit })
       saveToStorage(STORAGE_KEY_PLATFORMS, updated)
       saveToStorage(STORAGE_KEY_ACTIVE, newActiveId)
+      saveToStorage(STORAGE_KEY_SPLIT, newSplit)
     },
 
     reorderPlatforms: (fromId, toId) => {
@@ -199,14 +263,20 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
     },
 
     resetToDefaults: () => {
+      const defaultActiveId = DEFAULT_PLATFORMS.find(p => p.enabled)?.id ?? null
+      const defaultSplit = defaultActiveId ? [defaultActiveId] : []
       set({
         platforms: DEFAULT_PLATFORMS,
         config: DEFAULT_CONFIG,
-        activePlatformId: DEFAULT_PLATFORMS.find(p => p.enabled)?.id ?? null,
+        activePlatformId: defaultActiveId,
+        layoutMode: 'single',
+        splitPlatformIds: defaultSplit,
       })
       saveToStorage(STORAGE_KEY_PLATFORMS, DEFAULT_PLATFORMS)
       saveToStorage(STORAGE_KEY_CONFIG, DEFAULT_CONFIG)
-      saveToStorage(STORAGE_KEY_ACTIVE, DEFAULT_PLATFORMS.find(p => p.enabled)?.id ?? null)
+      saveToStorage(STORAGE_KEY_ACTIVE, defaultActiveId)
+      saveToStorage(STORAGE_KEY_LAYOUT, 'single')
+      saveToStorage(STORAGE_KEY_SPLIT, defaultSplit)
     },
   }
 })

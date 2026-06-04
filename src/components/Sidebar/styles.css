@@ -351,3 +351,85 @@
   font-size: 16px;
   padding: 6px;
 }
+
+/* ============================
+   布局切换栏 + 分屏多选
+   ============================ */
+
+.sidebar-layout-switch {
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+.sidebar-layout-switch.is-collapsed {
+  display: flex;
+  justify-content: center;
+  padding: 8px 6px;
+}
+
+.sidebar-layout-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-sidebar-hover);
+}
+
+.sidebar-layout-seg-btn {
+  flex: 1;
+  padding: 5px 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-sidebar);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-layout-seg-btn.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.sidebar-layout-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-sidebar-hover);
+  color: var(--text-sidebar);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.sidebar-layout-icon.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.sidebar-item-check {
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--text-sidebar);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.5;
+}
+
+.sidebar-item-check.checked {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+  opacity: 1;
+}

@@ -20,6 +20,7 @@ import './styles.css'
 interface WebViewContainerProps {
   platform: Platform
   isActive: boolean
+  multiVisible?: boolean
   onPlatformLoaded?: (id: string) => void
 }
 
@@ -100,7 +101,7 @@ const PlatformTitleIcon: React.FC<{ platform: Platform }> = ({ platform }) => {
   )
 }
 
-const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive, onPlatformLoaded }) => {
+const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive, multiVisible = false, onPlatformLoaded }) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const navbarRef = useRef<HTMLDivElement | null>(null)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
@@ -122,6 +123,11 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   // 用 ref 追踪 isActive，避免事件监听器闭包捕获旧值
   const isActiveRef = useRef(isActive)
   useEffect(() => { isActiveRef.current = isActive }, [isActive])
+
+  // 分屏模式标记：为 true 时由父组件统一调 showPlatformViews 控制可见性，
+  // 容器内部不再调用互斥的 showPlatformView（否则多容器会互相 hide）
+  const multiVisibleRef = useRef(multiVisible)
+  useEffect(() => { multiVisibleRef.current = multiVisible }, [multiVisible])
 
   const activeState = states[activeViewId]
   const activeTab = tabs.find(tab => tab.id === activeViewId) ?? tabs[0]
@@ -232,7 +238,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
     ).then(state => {
       createdViewIdsRef.current.add(tab.id)
       setStates(prev => ({ ...prev, [tab.id]: state }))
-      if (isActiveRef.current && activeViewId === tab.id) {
+      if (!multiVisibleRef.current && isActiveRef.current && activeViewId === tab.id) {
         return showPlatformView(tab.id)
       }
     }).catch(() => {
@@ -278,13 +284,16 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
     if (isActive) {
       if (activeTab) ensureView(activeTab)
       syncBounds()
-      showPlatformView(activeViewId).catch(() => {})
+      if (!multiVisible) {
+        showPlatformView(activeViewId).catch(() => {})
+      }
     }
   }, [
     activeTab,
     activeViewId,
     ensureView,
     isActive,
+    multiVisible,
     syncBounds,
   ])
 
@@ -523,7 +532,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   }, [activeViewId, canCloseActiveTab, handleCloseTab])
 
   return (
-    <div ref={containerRef} className={`webview-container ${isActive ? 'active' : ''}`}>
+    <div ref={containerRef} className={`webview-container ${isActive ? 'active' : ''}${multiVisible ? ' split' : ''}`}>
       {/* 导航栏 */}
       <div ref={navbarRef} className="webview-navbar">
         <div className="webview-nav-buttons">

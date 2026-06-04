@@ -63,6 +63,10 @@ export async function showPlatformView(platformId: string) {
   return invoke<void>('show_platform_view', { platformId })
 }
 
+export async function showPlatformViews(platformIds: string[]) {
+  return invoke<void>('show_platform_views', { platformIds })
+}
+
 export async function closePlatformView(platformId: string) {
   return invoke<void>('close_platform_view', { platformId })
 }
@@ -97,6 +101,14 @@ export async function getPlatformState(platformId: string) {
 
 export async function switchConversation(platformId: string, offset: number) {
   return invoke<void>('switch_conversation', { platformId, offset })
+}
+
+export async function fillPlatformInput(
+  platformId: string,
+  brand: string,
+  text: string
+) {
+  return invoke<void>('fill_platform_input', { platformId, brand, text })
 }
 
 export function onPlatformStateChanged(

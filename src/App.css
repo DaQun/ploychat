@@ -115,9 +115,55 @@ body {
 /* 主内容区 */
 .main-content {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   position: relative;
   overflow: hidden;
   background: var(--bg-primary);
+  min-width: 0;
+}
+
+/* WebView 网格区：单屏下容器绝对叠放，分屏下为网格 */
+.webview-grid {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 分屏：网格布局 */
+.main-content.layout-split .webview-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--border-color);
+  grid-auto-rows: 1fr;
+}
+
+.main-content.layout-split.cols-1 .webview-grid {
+  grid-template-columns: 1fr;
+}
+
+.main-content.layout-split.cols-2 .webview-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.main-content.layout-split.cols-3 .webview-grid {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.main-content.layout-split.cols-4 .webview-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+/* 分屏容器：可见的作为网格子项，未激活的不占格 */
+.main-content.layout-split .webview-container.split.active {
+  position: relative;
+  visibility: visible;
+  z-index: 1;
+}
+
+.main-content.layout-split .webview-container.split:not(.active) {
+  display: none;
 }
 
 /* 空状态 */
