@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "polychat"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "arboard",
  "image 0.24.9",
@@ -2545,6 +2545,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

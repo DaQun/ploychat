@@ -4,28 +4,45 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "windows")]
+use std::thread;
 use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{
-  AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, Runtime, Webview,
-  WebviewBuilder, WebviewUrl, Window,
+  AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect,
+  Runtime, Webview, WebviewBuilder, WebviewUrl, Window,
 };
 use url::Url;
 
-// macOS 下 Tauri 使用系统 WKWebView（与 Safari 同引擎），UA 必须与实际 JS/HTTP 指纹一致，
-// 否则 Cloudflare、reCAPTCHA 等会因 UA 声称 Chrome 但缺少 Sec-CH-UA / userAgentData 等特征
-// 判定为机器人。Windows 用 WebView2（Chromium），Linux 用 WebKitGTK，分别选用匹配的 UA。
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, MOD_CONTROL, MOD_SHIFT};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+  GetForegroundWindow, GetMessageW, MSG, WM_HOTKEY,
+};
+
+// macOS 娑?Tauri 娴ｈ法鏁ょ化鑽ょ埠 WKWebView閿涘牅绗?Safari 閸氬苯绱╅幙搴礆閿涘A 韫囧懘銆忔稉搴＄杽闂?JS/HTTP 閹稿洨姹楁稉鈧懛杈剧礉
+// 閸氾箑鍨?Cloudflare閵嗕购eCAPTCHA 缁涘绱伴崶?UA 婢规壆袨 Chrome 娴ｅ棛宸辩亸?Sec-CH-UA / userAgentData 缁涘澹掑?
+// 閸掋倕鐣炬稉鐑樻簚閸ｃ劋姹夐妴淇塱ndows 閻?WebView2閿涘湑hromium閿涘绱滾inux 閻?WebKitGTK閿涘苯鍨庨崚顐︹偓澶屾暏閸栧綊鍘ら惃?UA閵?
 #[cfg(target_os = "macos")]
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15";
-
-#[cfg(target_os = "windows")]
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
 
 #[cfg(all(unix, not(target_os = "macos")))]
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 const MENU_ID_PREV_CONVERSATION: &str = "polychat-prev-conversation";
 const MENU_ID_NEXT_CONVERSATION: &str = "polychat-next-conversation";
+const MENU_ID_SWITCH_PLATFORM_PREFIX: &str = "polychat-switch-platform-";
+#[cfg(target_os = "windows")]
+const HOTKEY_SWITCH_PLATFORM_BASE_ID: i32 = 0x5043_0100;
+#[cfg(target_os = "windows")]
+const HOTKEY_PREV_CONVERSATION_ID: i32 = 0x5043_0201;
+#[cfg(target_os = "windows")]
+const HOTKEY_NEXT_CONVERSATION_ID: i32 = 0x5043_0202;
+#[cfg(target_os = "windows")]
+const VK_OEM_4: u32 = 0xDB;
+#[cfg(target_os = "windows")]
+const VK_OEM_6: u32 = 0xDD;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +51,7 @@ struct ViewBounds {
   y: f64,
   width: f64,
   height: f64,
-  // React 视口逻辑高度(window.innerHeight)，用于推算标题栏偏移
+  // React 鐟欏棗褰涢柅鏄忕帆妤傛ê瀹?window.innerHeight)閿涘瞼鏁ゆ禍搴㈠腹缁犳鐖ｆ０妯荤埉閸嬪繒些
   viewport_height: Option<f64>,
 }
 
@@ -105,6 +122,21 @@ fn sanitize_platform_id(platform_id: &str) -> String {
     .collect()
 }
 
+fn frontend_platform_label(platform_id: &str) -> String {
+  let sanitized: String = platform_id
+    .chars()
+    .map(|ch| {
+      if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':' || ch == '/' {
+        ch
+      } else {
+        '_'
+      }
+    })
+    .collect();
+  format!("platform-{sanitized}")
+}
+
+#[cfg(target_os = "macos")]
 fn data_store_identifier(storage_id: &str) -> [u8; 16] {
   let mut hash = 0xcbf29ce484222325u64;
   for byte in storage_id.as_bytes() {
@@ -127,9 +159,9 @@ fn data_store_identifier(storage_id: &str) -> [u8; 16] {
 fn physical_position_from_bounds(window: &Window, bounds: &ViewBounds) -> PhysicalPosition<i32> {
   let scale_factor = window.scale_factor().unwrap_or(1.0);
 
-  // 子 WebView 的坐标原点是窗口内容区顶部（含标题栏下沿），
-  // 而 React 的 getBoundingClientRect 原点是 React 视口顶部（标题栏之下）。
-  // 二者相差一个标题栏高度，需要补偿到 y 上，否则子 WebView 整体上移、底部留白。
+  // 鐎?WebView 閻ㄥ嫬娼楅弽鍥у斧閻愯妲哥粣妤€褰涢崘鍛啇閸栨椽銆婇柈顭掔礄閸氼偅鐖ｆ０妯荤埉娑撳閮ㄩ敍澶涚礉
+  // 閼?React 閻?getBoundingClientRect 閸樼喓鍋ｉ弰?React 鐟欏棗褰涙い鍫曞劥閿涘牊鐖ｆ０妯荤埉娑斿绗呴敍澶堚偓?
+  // 娴滃矁鈧懐娴夊顔荤娑擃亝鐖ｆ０妯荤埉妤傛ê瀹抽敍宀勬付鐟曚浇藟閸嬪灝鍩?y 娑撳绱濋崥锕€鍨€?WebView 閺佺繝缍嬫稉濠勑╅妴浣哥俺闁劎鏆€閻у鈧?
   let offset_y = match (bounds.viewport_height, window.inner_size().ok()) {
     (Some(viewport_height), Some(inner)) => {
       (inner.height as f64 - viewport_height * scale_factor).max(0.0)
@@ -153,10 +185,52 @@ fn physical_size_from_bounds(window: &Window, bounds: &ViewBounds) -> PhysicalSi
 }
 
 fn rect_from_bounds(window: &Window, bounds: ViewBounds) -> Rect {
+  #[cfg(target_os = "windows")]
+  {
+    return logical_rect_from_bounds(bounds);
+  }
+
+  #[cfg(not(target_os = "windows"))]
   Rect {
     position: tauri::Position::Physical(physical_position_from_bounds(window, &bounds)),
     size: tauri::Size::Physical(physical_size_from_bounds(window, &bounds)),
   }
+}
+
+#[cfg(target_os = "windows")]
+fn logical_position_from_bounds(bounds: &ViewBounds) -> LogicalPosition<f64> {
+  // Match Tauri's JS Webview API on Windows. WebView2 child coordinates are
+  // logical pixels relative to the parent webview client area.
+  LogicalPosition::new(bounds.x.round().max(0.0), bounds.y.round().max(0.0))
+}
+
+#[cfg(target_os = "windows")]
+fn logical_size_from_bounds(bounds: &ViewBounds) -> LogicalSize<f64> {
+  LogicalSize::new(bounds.width.round().max(1.0), bounds.height.round().max(1.0))
+}
+
+#[cfg(target_os = "windows")]
+fn logical_rect_from_bounds(bounds: ViewBounds) -> Rect {
+  Rect {
+    position: tauri::Position::Logical(logical_position_from_bounds(&bounds)),
+    size: tauri::Size::Logical(logical_size_from_bounds(&bounds)),
+  }
+}
+
+fn has_visible_bounds(bounds: &ViewBounds) -> bool {
+  bounds.width >= 16.0 && bounds.height >= 16.0
+}
+
+#[cfg(target_os = "windows")]
+fn default_user_agent_override() -> Option<&'static str> {
+  // WebView2 exposes Chromium client hints that must match the real runtime.
+  // A hard-coded Edge UA can make login/challenge pages render blank on Windows.
+  None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_user_agent_override() -> Option<&'static str> {
+  Some(DEFAULT_USER_AGENT)
 }
 
 fn emit_platform_state<R: Runtime>(
@@ -257,7 +331,7 @@ fn guess_download_filename(url: &Url) -> String {
     .and_then(|seg| percent_decode_segment(seg))
     .filter(|s| !s.is_empty())
     .unwrap_or_else(|| "download".to_string());
-  // 去掉文件系统不友好字符
+  // 閸樼粯甯€閺傚洣娆㈢化鑽ょ埠娑撳秴寮告總钘夌摟缁?
   raw
     .chars()
     .map(|c| match c {
@@ -363,7 +437,7 @@ fn is_plausible_filename(name: &str) -> bool {
 }
 
 fn percent_decode_segment(segment: &str) -> Option<String> {
-  // 简化的 percent-decode；失败就直接返回原串
+  // 缁犫偓閸栨牜娈?percent-decode閿涙稑銇戠拹銉ユ皑閻╁瓨甯存潻鏂挎礀閸樼喍瑕?
   let bytes = segment.as_bytes();
   let mut out = Vec::with_capacity(bytes.len());
   let mut i = 0;
@@ -406,9 +480,9 @@ fn unique_path(candidate: PathBuf) -> PathBuf {
   candidate
 }
 
-// 在每个新 document 创建后、页面 JS 执行之前最早注入。
-// 用于把 WebView 在 navigator 上残留的"自动化指纹"修圆，避免 Cloudflare/Turnstile 等
-// 反爬服务在 challenge 阶段直接把我们判定为机器人。
+// 閸︺劍鐦℃稉顏呮煀 document 閸掓稑缂撻崥搴涒偓渚€銆夐棃?JS 閹笛嗩攽娑斿澧犻張鈧弮鈺傛暈閸忋儯鈧?
+// 閻劋绨幎?WebView 閸?navigator 娑撳﹥鐣悾娆戞畱"閼奉亜濮╅崠鏍ㄥ瘹缁?娣囶喖娓鹃敍宀勪缉閸?Cloudflare/Turnstile 缁?
+// 閸欏秶鍩囬張宥呭閸?challenge 闂冭埖顔岄惄瀛樺复閹跺﹥鍨滄禒顒€鍨界€规矮璐熼張鍝勬珤娴滄亽鈧?
 fn stealth_init_script() -> &'static str {
   r#"
 (() => {
@@ -419,11 +493,11 @@ fn stealth_init_script() -> &'static str {
       Object.defineProperty(obj, prop, { get: getter, configurable: true });
     } catch (_) {}
   };
-  // navigator.webdriver: 真实 Safari 没有此属性 (undefined)，部分自动化 WebView 会暴露为 true
+  // navigator.webdriver: 閻喎鐤?Safari 濞屸剝婀佸銈呯潣閹?(undefined)閿涘矂鍎撮崚鍡氬殰閸斻劌瀵?WebView 娴兼碍姣氶棁韫礋 true
   try { delete Navigator.prototype.webdriver; } catch (_) {}
   safeDefine(navigator, 'webdriver', () => undefined);
 
-  // navigator.languages: 真实 Safari 通常返回 ['zh-CN','zh','en'] 之类的非空数组
+  // navigator.languages: 閻喎鐤?Safari 闁艾鐖舵潻鏂挎礀 ['zh-CN','zh','en'] 娑斿琚惃鍕姜缁岀儤鏆熺紒?
   try {
     if (!navigator.languages || navigator.languages.length === 0) {
       const lang = navigator.language || 'en-US';
@@ -432,14 +506,14 @@ fn stealth_init_script() -> &'static str {
     }
   } catch (_) {}
 
-  // 部分检测脚本会读 window.chrome：UA 既然声明为 Safari，就应该没有 chrome 对象
+  // 闁劌鍨庡Λ鈧ù瀣壖閺堫兛绱扮拠?window.chrome閿涙瓗A 閺冦垻鍔ф竟鐗堟娑?Safari閿涘苯姘ㄦ惔鏃囶嚉濞屸剝婀?chrome 鐎电钖?
   try {
     if (/Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg/.test(navigator.userAgent)) {
       try { delete window.chrome; } catch (_) {}
     }
   } catch (_) {}
 
-  // Notification.permission 在 WebView 中可能返回 'denied'，真实 Safari 默认 'default'
+  // Notification.permission 閸?WebView 娑擃厼褰查懗鍊熺箲閸?'denied'閿涘瞼婀＄€?Safari 姒涙顓?'default'
   try {
     if (typeof Notification !== 'undefined') {
       const original = Notification.permission;
@@ -449,8 +523,8 @@ fn stealth_init_script() -> &'static str {
     }
   } catch (_) {}
 
-  // 拦 URL.createObjectURL：缓存 Blob 以便后面 a[download] 拦截不必再 fetch
-  // 必须放在 init script 而非 page-load 注入，否则页面早期创建的 blob 拿不到。
+  // 閹?URL.createObjectURL閿涙氨绱︾€?Blob 娴犮儰绌堕崥搴ㄦ桨 a[download] 閹凤附鍩呮稉宥呯箑閸?fetch
+  // 韫囧懘銆忛弨鎯ф躬 init script 閼板矂娼?page-load 濞夈劌鍙嗛敍灞芥儊閸掓瑩銆夐棃銏℃－閺堢喎鍨卞铏规畱 blob 閹峰じ绗夐崚鑸偓?
   try {
     const originalCreateURL = URL.createObjectURL;
     if (originalCreateURL && !URL.__POLYCHAT_PATCHED__) {
@@ -486,16 +560,10 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
   window.__POLYCHAT_TAB_INTERCEPTOR__ = true;
   const platformId = {platform_id};
   const openerViewId = {opener_view_id};
-  const polyDebugLog = (tag, payload) => {{
-    try {{
-      const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
-      window.__TAURI_INTERNALS__?.invoke('debug_log', {{ tag: String(tag), payload: text }});
-    }} catch (_) {{}}
-  }};
-  // 修复 macOS WKWebView 拒绝 navigator.clipboard.write 写图片的限制。
-  // WKWebView 不允许 ClipboardItem(image/*)，拦截 clipboard.write，把图片二进制
-  // 通过 Tauri 命令交 arboard 写入系统剪贴板。
-  // Windows/Linux 上的 WebView2/WebKitGTK 原生支持图片剪贴板，无需注入 hook。
+  // 娣囶喖顦?macOS WKWebView 閹锋帞绮?navigator.clipboard.write 閸愭瑥娴橀悧鍥╂畱闂勬劕鍩楅妴?
+  // WKWebView 娑撳秴鍘戠拋?ClipboardItem(image/*)閿涘本瀚ら幋?clipboard.write閿涘本濡搁崶鍓у娴滃矁绻橀崚?
+  // 闁俺绻?Tauri 閸涙垝鎶ゆ禍?arboard 閸愭瑥鍙嗙化鑽ょ埠閸擃亣鍒涢弶瑁も偓?
+  // Windows/Linux 娑撳﹦娈?WebView2/WebKitGTK 閸樼喓鏁撻弨顖涘瘮閸ュ墽澧栭崜顏囧垱閺夊尅绱濋弮鐘绘付濞夈劌鍙?hook閵?
   try {{
     if (/Mac/.test(navigator.userAgent)) {{
       const cb = navigator.clipboard;
@@ -529,18 +597,14 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
               const b64 = await blobToBase64(imageBlob);
               await window.__TAURI_INTERNALS__?.invoke('copy_image_to_clipboard', {{ dataBase64: b64 }});
               return undefined;
-            }} catch (e) {{
-              polyDebugLog('clipboard.image.native.fail', String(e && e.message || e));
-            }}
+            }} catch (e) {{}}
           }}
           return orig(items);
         }};
         cb.__polyImageHook = true;
       }}
     }}
-  }} catch (e) {{
-    polyDebugLog('clipboard.image.hook.install.fail', String(e && e.message || e));
-  }}
+  }} catch (e) {{}}
   const quitApp = () => {{
     try {{
       window.__TAURI_INTERNALS__?.invoke('quit_app');
@@ -584,8 +648,8 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     }}
   }};
   window.open = function(url, target, features) {{
-    // 仅拦截"真正跨域"的普通窗口打开请求；认证弹窗保留原生 popup，
-    // 避免破坏 Google OAuth 这类依赖 window.opener / postMessage 的授权流程。
+    // 娴犲懏瀚ら幋?閻喐顒滅捄銊ョ厵"閻ㄥ嫭娅橀柅姘辩崶閸欙絾澧﹀鈧拠閿嬬湴閿涙稖顓荤拠浣歌剨缁愭ぞ绻氶悾娆忓斧閻?popup閿?
+    // 闁灝鍘ら惍鏉戞綎 Google OAuth 鏉╂瑧琚笟婵婄 window.opener / postMessage 閻ㄥ嫭宸块弶鍐╃ウ缁嬪鈧?
     if (url && isExternalUrl(url) && !isAuthPopupUrl(url)) {{
       openInAppTab(url);
       return null;
@@ -593,7 +657,7 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     return originalOpen ? originalOpen.call(window, url, target, features) : null;
   }};
 
-  // 把 Blob/ArrayBuffer 转 base64，分块以避免大文件超过调用栈限制
+  // 閹?Blob/ArrayBuffer 鏉?base64閿涘苯鍨庨崸妞句簰闁灝鍘ゆ径褎鏋冩禒鎯扮Т鏉╁洩鐨熼悽銊︾垽闂勬劕鍩?
   const toBase64 = (blob) => new Promise((resolve, reject) => {{
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error);
@@ -616,14 +680,12 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
         }});
       }} catch (_) {{}}
     }}).catch((e) => {{
-      console.warn('[polychat] toBase64 failed', e);
       reportDownloadFailure(filename, sourceUrl, (e && e.message) || 'toBase64 failed');
     }});
   }};
 
-  // JS 拦截失败时上报，给用户一个可见的失败 toast
+  // JS 閹凤附鍩呮径杈Е閺冩湹绗傞幎銉礉缂佹瑧鏁ら幋铚傜娑擃亜褰茬憴浣烘畱婢惰精瑙?toast
   const reportDownloadFailure = (filename, sourceUrl, reason) => {{
-    console.warn('[polychat] download failed', {{ filename, sourceUrl, reason }});
     try {{
       window.__TAURI_INTERNALS__?.invoke('report_download_error', {{
         platformId,
@@ -640,16 +702,15 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     }} catch (_) {{}}
   }};
 
-  // 拦截 a[download]：a.click() / 用户点击带 download 属性的链接。
-  // WKWebView 默认不会处理这类下载，必须自己读出内容写盘。
+  // 閹凤附鍩?a[download]閿涙瓫.click() / 閻劍鍩涢悙鐟板毊鐢?download 鐏炵偞鈧呮畱闁剧偓甯撮妴?
+  // WKWebView 姒涙顓绘稉宥勭窗婢跺嫮鎮婃潻娆戣娑撳娴囬敍灞界箑妞ゆ槒鍤滃杈嚢閸戝搫鍞寸€圭懓鍟撻惄妯糕偓?
   const tryInterceptDownloadAnchor = (anchor, event) => {{
     if (!anchor || !anchor.hasAttribute('download')) return false;
     const href = anchor.getAttribute('href') || anchor.href || '';
     if (!href) return false;
     const filename = anchor.getAttribute('download') || href.split(/[\\/?#]/).filter(Boolean).pop() || 'download';
-    console.log('[polychat] intercept a[download] click', {{ href, filename }});
 
-    // 优先使用 createObjectURL 缓存里的 blob，避免再 fetch（很多站点的 CSP 不允许 connect-src blob:）
+    // 娴兼ê鍘涙担璺ㄦ暏 createObjectURL 缂傛挸鐡ㄩ柌宀€娈?blob閿涘矂浼╅崗宥呭晙 fetch閿涘牆绶㈡径姘辩彲閻愬湱娈?CSP 娑撳秴鍘戠拋?connect-src blob:閿?
     const cachedBlob = window.__POLYCHAT_BLOBS__?.get(href);
     if (cachedBlob) {{
       if (event) {{
@@ -660,20 +721,19 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       return true;
     }}
 
-    // blob: 与 data: 直接读
+    // blob: 娑?data: 閻╁瓨甯寸拠?
     if (href.startsWith('blob:') || href.startsWith('data:')) {{
       if (event) {{
         event.preventDefault();
         event.stopPropagation();
       }}
       fetch(href).then(r => r.blob()).then(b => sendDownload(b, filename, href)).catch((e) => {{
-        console.warn('[polychat] blob/data fetch failed', e);
         reportDownloadFailure(filename, href, (e && e.message) || 'blob/data fetch failed');
       }});
       return true;
     }}
-    // http(s) 资源也接管下来，否则 WKWebView 多半直接在 webview 里跳转。
-    // 同源带 credentials（保留登录态）；跨域强制不带 credentials，否则会触发 CORS 失败。
+    // http(s) 鐠у嫭绨稊鐔稿复缁犫€茬瑓閺夈儻绱濋崥锕€鍨?WKWebView 婢舵艾宕愰惄瀛樺复閸?webview 闁插矁鐑︽潪顑锯偓?
+    // 閸氬本绨敮?credentials閿涘牅绻氶悾娆戞瑜版洘鈧緤绱氶敍娑滄硶閸╃喎宸遍崚鏈电瑝鐢?credentials閿涘苯鎯侀崚娆庣窗鐟欙箑褰?CORS 婢惰精瑙﹂妴?
     try {{
       const url = new URL(href, location.href);
       if (/^https?:$/.test(url.protocol)) {{
@@ -692,9 +752,7 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
           }})
           .then((b) => sendDownload(b, filename, url.href))
           .catch((e) => {{
-            console.warn('[polychat] http fetch failed', e);
-            // 兜底：把链接抛给系统浏览器，让用户在 Safari 里完成下载，
-            // 然后再上报一次失败让 toast 提示"已在浏览器中打开"。
+            // Fall back to the system browser when the in-webview fetch fails.
             openInSystemBrowser(url.href);
             reportDownloadFailure(filename, url.href, '已在系统浏览器中打开 (' + ((e && e.message) || 'fetch failed') + ')');
           }});
@@ -704,9 +762,9 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
     return false;
   }};
 
-  // 兜底：当 DOM 里新增 <a download> 并被合成 click 时（很多框架的下载实现），
-  // MutationObserver 看不到 click 行为，但可以观察"新增节点"。结合下面的 click 监听够覆盖大多数情况。
-  // 但若网站走 window.location.href = blobUrl 这种方式，需要单独拦 location 赋值。
+  // 閸忔粌绨抽敍姘秼 DOM 闁插本鏌婃晶?<a download> 楠炴儼顫﹂崥鍫熷灇 click 閺冭绱欏鍫濐樋濡楀棙鐏﹂惃鍕瑓鏉炶棄鐤勯悳甯礆閿?
+  // MutationObserver 閻绗夐崚?click 鐞涘奔璐熼敍灞肩稻閸欘垯浜掔憴鍌氱檪"閺傛澘顤冮懞鍌滃仯"閵嗗倻绮ㄩ崥鍫滅瑓闂堛垻娈?click 閻╂垵鎯夋径鐔活洬閻╂牕銇囨径姘殶閹懎鍠岄妴?
+  // 娴ｅ棜瀚㈢純鎴犵彲鐠?window.location.href = blobUrl 鏉╂瑧顫掗弬鐟扮础閿涘矂娓剁憰浣稿礋閻欘剚瀚?location 鐠у鈧鈧?
   try {{
     const proto = Object.getPrototypeOf(window.location);
     const desc = Object.getOwnPropertyDescriptor(Location.prototype, 'href') || Object.getOwnPropertyDescriptor(proto, 'href');
@@ -718,10 +776,8 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
         set(value) {{
           const v = String(value || '');
           if (v.startsWith('blob:') || v.startsWith('data:')) {{
-            console.log('[polychat] intercept location.href blob/data set', v);
             const filename = (v.split('#').pop() || 'download').replace(/[^A-Za-z0-9._\-]/g, '_');
             fetch(v).then(r => r.blob()).then(b => sendDownload(b, filename, v)).catch((e) => {{
-              console.warn('[polychat] location blob fetch failed', e);
               reportDownloadFailure(filename, v, (e && e.message) || 'location blob fetch failed');
             }});
             return;
@@ -731,13 +787,12 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       }});
     }}
   }} catch (e) {{
-    console.warn('[polychat] hook location.href failed', e);
   }}
 
-  // createObjectURL 拦截已挪到 stealth_init_script（启动更早），这里不再重复 hook。
+  // createObjectURL 閹凤附鍩呭鍙夊皳閸?stealth_init_script閿涘牆鎯庨崝銊︽纯閺冣晪绱氶敍宀冪箹闁插奔绗夐崘宥夊櫢婢?hook閵?
 
-  // 兜底快捷键：Cmd/Ctrl + Shift + S 保存当前鼠标悬停的图片到 Downloads。
-  // 用于网站下载按钮不工作时的人工兜底。
+  // 閸忔粌绨宠箛顐ｅ祹闁款噯绱癈md/Ctrl + Shift + S 娣囨繂鐡ㄨぐ鎾冲姒х姵鐖ｉ幃顒€浠犻惃鍕禈閻楀洤鍩?Downloads閵?
+  // 閻劋绨純鎴犵彲娑撳娴囬幐澶愭尦娑撳秴浼愭担婊勬閻ㄥ嫪姹夊銉ュ幑鎼存洏鈧?
   try {{
     let lastHoverImg = null;
     document.addEventListener('mouseover', (e) => {{
@@ -753,13 +808,11 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       e.stopPropagation();
       const src = img.src;
       const filename = (img.alt || src.split(/[\\/?#]/).filter(Boolean).pop() || 'image').slice(0, 80);
-      console.log('[polychat] hotkey save image', src);
       fetch(src, {{ credentials: 'include', mode: 'cors' }})
         .then(r => r.blob())
         .then(b => sendDownload(b, filename, src))
         .catch((err) => {{
-          console.warn('[polychat] hotkey fetch failed, fallback to canvas', err);
-          // CORS 失败时尝试从已加载的 <img> 画到 canvas 再读
+          // CORS 婢惰精瑙﹂弮璺虹毦鐠囨洑绮犲鎻掑鏉炵晫娈?<img> 閻㈣鍩?canvas 閸愬秷顕?
           try {{
             const canvas = document.createElement('canvas');
             canvas.width = img.naturalWidth || img.width;
@@ -767,7 +820,6 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
             canvas.getContext('2d').drawImage(img, 0, 0);
             canvas.toBlob((b) => b && sendDownload(b, (filename || 'image') + '.png', src), 'image/png');
           }} catch (e2) {{
-            console.warn('[polychat] canvas fallback failed', e2);
           }}
         }});
     }}, true);
@@ -798,8 +850,8 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
 
     return parsed.href !== location.href;
   }};
-  // 程式调用 a.click()（很多 SPA 用这种方式触发下载）不会冒泡到 document，
-  // 直接在原型层面拦下来。
+  // 缁嬪绱＄拫鍐暏 a.click()閿涘牆绶㈡径?SPA 閻劏绻栫粔宥嗘煙瀵繗袝閸欐垳绗呮潪鏂ょ礆娑撳秳绱伴崘鎺撳満閸?document閿?
+  // 閻╁瓨甯撮崷銊ュ斧閸ㄥ鐪伴棃銏″娑撳娼甸妴?
   try {{
     const originalClick = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function() {{
@@ -912,12 +964,12 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       ].join(';');
       return button;
     }};
-    const prev = makeButton('↑', 'Previous');
-    const next = makeButton('↓', 'Next');
+    const prev = makeButton('閳?, 'Previous');
+    const next = makeButton('閳?, 'Next');
 
     const close = document.createElement('button');
     close.type = 'button';
-    close.textContent = '×';
+    close.textContent = '鑴?;
     close.title = 'Close';
     close.style.cssText = [
       'width:24px',
@@ -1098,10 +1150,10 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       box.__polychatScheduleFind && box.__polychatScheduleFind(false);
     }}
   }};
-  const EXCLUDED_CONVERSATION_TEXT_RE = /^(new chat|new conversation|新建|新对话|新会话|新聊天|ai 创作|ai创作|云盘|更多|我的创作)$/i;
-  const DATE_GROUP_TEXT_RE = /^\d{{4}}(?:[-/年]\s*)?(?:0?[1-9]|1[0-2])月?$/;
+  const EXCLUDED_CONVERSATION_TEXT_RE = /^(new chat|new conversation|start a new chat|new|history|\u65b0\u5bf9\u8bdd|\u65b0\u5efa\u5bf9\u8bdd|\u5386\u53f2|\u5bf9\u8bdd\u5386\u53f2)$/i;
+  const DATE_GROUP_TEXT_RE = /^(today|yesterday|previous\s+\d+\s+days?|last\s+\d+\s+days?|\d{{4}}(?:[-/]\s*)?(?:0?[1-9]|1[0-2])|\d{{1,2}}\/\d{{1,2}}(?:\/\d{{2,4}})?)$/i;
   const ACTIVE_CLASS_RE = /(?:^|[\s_-])(active|selected|current|is-active|is-selected)(?:$|[\s_-])/;
-  const normalizeConversationText = (text) => String(text || '').replace(/[⋯…]/g, '').replace(/\s+/g, ' ').trim();
+  const normalizeConversationText = (text) => String(text || '').replace(/[\u200b-\u200f\u202a-\u202e]/g, '').replace(/\s+/g, ' ').trim();
   const isSelectedByStyle = (el) => {{
     let cursor = el;
     for (let depth = 0; cursor && depth < 4; depth++, cursor = cursor.parentElement) {{
@@ -1137,7 +1189,7 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
       while (walker.nextNode()) {{
         const el = walker.currentNode;
         const text = (el.textContent || '').trim();
-        if (text !== '历史对话' && !/^history$/i.test(text)) continue;
+        if (!/^(history|chat history|conversations?|\u5386\u53f2|\u5bf9\u8bdd\u5386\u53f2)$/i.test(text)) continue;
         let cursor = el.nextElementSibling;
         while (cursor) {{
           roots.push(cursor);
@@ -1360,6 +1412,102 @@ fn tab_interceptor_script(platform_id: &str, opener_view_id: &str) -> String {
   )
 }
 
+fn frontend_click_bridge_script(platform_id: &str, opener_view_id: &str) -> String {
+  let platform_id = serde_json::to_string(platform_id).unwrap_or_else(|_| "\"\"".to_string());
+  let opener_view_id = serde_json::to_string(opener_view_id).unwrap_or_else(|_| "\"\"".to_string());
+
+  format!(
+    r#"
+(() => {{
+  if (window.__POLYCHAT_FRONTEND_CLICK_BRIDGE__) return;
+  window.__POLYCHAT_FRONTEND_CLICK_BRIDGE__ = true;
+  const platformId = {platform_id};
+  const openerViewId = {opener_view_id};
+
+  const openInAppTab = (rawUrl) => {{
+    if (!rawUrl) return;
+    try {{
+      const url = new URL(rawUrl, location.href).href;
+      const promise = window.__TAURI_INTERNALS__?.invoke('open_platform_tab', {{
+        platformId,
+        openerViewId,
+        url
+      }});
+      if (promise && typeof promise.catch === 'function') {{
+        promise.catch(() => {{
+          try {{ location.href = url; }} catch (_) {{}}
+        }});
+      }}
+    }} catch (_) {{}}
+  }};
+
+  const findAnchor = (event) => {{
+    const path = event.composedPath ? event.composedPath() : [];
+    let anchor = path.find((item) => item && item.tagName === 'A');
+    if (!anchor && event.target?.closest) anchor = event.target.closest('a[href]');
+    return anchor;
+  }};
+
+  const shouldBridgeAnchor = (anchor, event) => {{
+    if (!anchor || !anchor.href || anchor.hasAttribute('download')) return false;
+    const rawHref = anchor.getAttribute('href') || '';
+    if (!rawHref || rawHref.startsWith('#')) return false;
+    let parsed;
+    try {{
+      parsed = new URL(anchor.href, location.href);
+    }} catch (_) {{
+      return false;
+    }}
+    if (!/^https?:$/.test(parsed.protocol)) return false;
+    if (
+      parsed.origin === location.origin &&
+      parsed.pathname === location.pathname &&
+      parsed.search === location.search &&
+      parsed.hash
+    ) {{
+      return false;
+    }}
+
+    const target = String(anchor.target || '').toLowerCase();
+    return target === '_blank' || parsed.origin !== location.origin || event.metaKey || event.ctrlKey || event.shiftKey;
+  }};
+
+  const originalOpen = window.open;
+  window.open = function(url, target, features) {{
+    if (url) {{
+      try {{
+        const parsed = new URL(url, location.href);
+        if (/^https?:$/.test(parsed.protocol) && parsed.href !== location.href) {{
+          openInAppTab(parsed.href);
+          return null;
+        }}
+      }} catch (_) {{}}
+    }}
+    return originalOpen ? originalOpen.call(window, url, target, features) : null;
+  }};
+
+  document.addEventListener('click', (event) => {{
+    if (event.defaultPrevented) return;
+    const anchor = findAnchor(event);
+    if (!shouldBridgeAnchor(anchor, event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openInAppTab(anchor.href);
+  }}, true);
+
+  document.addEventListener('auxclick', (event) => {{
+    if (event.button !== 1 || event.defaultPrevented) return;
+    const anchor = findAnchor(event);
+    if (!shouldBridgeAnchor(anchor, event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openInAppTab(anchor.href);
+  }}, true);
+}})();
+"#
+  )
+}
+
 fn conversation_switch_script(offset: i32) -> String {
   let normalized_offset = if offset >= 0 { 1 } else { -1 };
   format!(
@@ -1368,10 +1516,10 @@ fn conversation_switch_script(offset: i32) -> String {
   const offset = {normalized_offset};
   if (window.__polychatSwitchConversationByOffset?.(offset)) return;
 
-  const EXCLUDED_CONVERSATION_TEXT_RE = /^(new chat|new conversation|新建|新对话|新会话|新聊天|ai 创作|ai创作|云盘|更多|我的创作)$/i;
-  const DATE_GROUP_TEXT_RE = /^\d{{4}}(?:[-/年]\s*)?(?:0?[1-9]|1[0-2])月?$/;
+  const EXCLUDED_CONVERSATION_TEXT_RE = /^(new chat|new conversation|start a new chat|new|history|\u65b0\u5bf9\u8bdd|\u65b0\u5efa\u5bf9\u8bdd|\u5386\u53f2|\u5bf9\u8bdd\u5386\u53f2)$/i;
+  const DATE_GROUP_TEXT_RE = /^(today|yesterday|previous\s+\d+\s+days?|last\s+\d+\s+days?|\d{{4}}(?:[-/]\s*)?(?:0?[1-9]|1[0-2])|\d{{1,2}}\/\d{{1,2}}(?:\/\d{{2,4}})?)$/i;
   const ACTIVE_CLASS_RE = /(?:^|[\s_-])(active|selected|current|is-active|is-selected)(?:$|[\s_-])/;
-  const normalizeConversationText = (text) => String(text || '').replace(/[⋯…]/g, '').replace(/\s+/g, ' ').trim();
+  const normalizeConversationText = (text) => String(text || '').replace(/[\u200b-\u200f\u202a-\u202e]/g, '').replace(/\s+/g, ' ').trim();
   const isSelectedByStyle = (el) => {{
     let cursor = el;
     for (let depth = 0; cursor && depth < 4; depth++, cursor = cursor.parentElement) {{
@@ -1407,7 +1555,7 @@ fn conversation_switch_script(offset: i32) -> String {
       while (walker.nextNode()) {{
         const el = walker.currentNode;
         const text = (el.textContent || '').trim();
-        if (text !== '历史对话' && !/^history$/i.test(text)) continue;
+        if (!/^(history|chat history|conversations?|\u5386\u53f2|\u5bf9\u8bdd\u5386\u53f2)$/i.test(text)) continue;
         let cursor = el.nextElementSibling;
         while (cursor) {{
           roots.push(cursor);
@@ -1600,6 +1748,12 @@ fn create_platform_view(
   user_agent: Option<String>,
   storage_id: Option<String>,
 ) -> Result<PlatformState, String> {
+  if !has_visible_bounds(&bounds) {
+    return Err(format!(
+      "invalid initial webview bounds for {platform_id}: {},{} {}x{}",
+      bounds.x, bounds.y, bounds.width, bounds.height
+    ));
+  }
   if let Some((webview, state)) = {
     let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
     views
@@ -1613,6 +1767,7 @@ fn create_platform_view(
   }
 
   let parsed_url = Url::parse(&url).map_err(|err| format!("invalid url: {err}"))?;
+  let blank_url = Url::parse("about:blank").map_err(|err| format!("invalid blank url: {err}"))?;
   let platform_label = format!("platform-{}", sanitize_platform_id(&platform_id));
   let storage_id = storage_id.unwrap_or_else(|| platform_id.clone());
   let data_dir = app
@@ -1631,7 +1786,7 @@ fn create_platform_view(
   let storage_for_new_window = storage_id.clone();
   let app_for_download = app.clone();
   let platform_for_download = platform_id.clone();
-  // 在 Requested 阶段记录目标路径，Finished 阶段回填（macOS 上 wry 不会回传路径）
+  // 閸?Requested 闂冭埖顔岀拋鏉跨秿閻╊喗鐖ｇ捄顖氱窞閿涘瓗inished 闂冭埖顔岄崶鐐诧綖閿涘潰acOS 娑?wry 娑撳秳绱伴崶鐐扮炊鐠侯垰绶為敍?
   let download_destinations: Arc<Mutex<HashMap<String, PathBuf>>> =
     Arc::new(Mutex::new(HashMap::new()));
   let download_dests_for_started = download_destinations.clone();
@@ -1639,18 +1794,33 @@ fn create_platform_view(
   let initial_title = platform_name.clone();
   let initial_url = url.clone();
 
-  let effective_user_agent = user_agent.unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
-  let builder = WebviewBuilder::new(platform_label, WebviewUrl::External(parsed_url))
-    .user_agent(&effective_user_agent)
+  #[allow(unused_mut)]
+  let mut builder = WebviewBuilder::new(platform_label, WebviewUrl::External(blank_url))
     .devtools(cfg!(debug_assertions))
-    .data_store_identifier(data_store_identifier(&storage_id))
-    .data_directory(data_dir)
-    // 在页面 JS 执行前最早注入：修平 WebView 上的 navigator 自动化指纹
-    .initialization_script(stealth_init_script())
+    .initialization_script(stealth_init_script());
+
+  // Windows WebView2 can hang while creating child webviews with a per-view
+  // user data folder. Use the default WebView2 profile there so add_child
+  // returns reliably; keep isolated data dirs on platforms where this path is stable.
+  #[cfg(not(target_os = "windows"))]
+  {
+    builder = builder.data_directory(data_dir);
+  }
+
+  let effective_user_agent = user_agent.or_else(|| default_user_agent_override().map(str::to_string));
+  if let Some(user_agent) = effective_user_agent.as_deref() {
+    builder = builder.user_agent(user_agent);
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    builder = builder.data_store_identifier(data_store_identifier(&storage_id));
+  }
+
+  let builder = builder
     .on_download(move |_webview, event| match event {
       DownloadEvent::Requested { url, destination } => {
-        eprintln!("[polychat] download Requested: {}", url);
-        // 把目标路径定到系统 ~/Downloads/<文件名>，同名追加 -1/-2…
+        // 閹跺﹦娲伴弽鍥熅瀵板嫬鐣鹃崚鎵兇缂?~/Downloads/<閺傚洣娆㈤崥?閿涘苯鎮撻崥宥堟嫹閸?-1/-2閳?
         let dir = app_for_download
           .path()
           .download_dir()
@@ -1658,7 +1828,6 @@ fn create_platform_view(
           .unwrap_or_else(|_| PathBuf::from("."));
         let filename = preferred_download_filename(&url, destination);
         let target = unique_path(dir.join(filename));
-        eprintln!("[polychat] download destination: {}", target.display());
         if let Ok(mut map) = download_dests_for_started.lock() {
           map.insert(url.to_string(), target.clone());
         }
@@ -1666,11 +1835,7 @@ fn create_platform_view(
         true
       }
       DownloadEvent::Finished { url, path, success } => {
-        eprintln!(
-          "[polychat] download Finished: url={} path={:?} success={}",
-          url, path, success
-        );
-        // macOS 上 wry 的 path 一直为 None，用 Requested 时缓存的目标路径回填
+        // macOS 娑?wry 閻?path 娑撯偓閻╃繝璐?None閿涘瞼鏁?Requested 閺冨墎绱︾€涙娈戦惄顔界垼鐠侯垰绶為崶鐐诧綖
         let resolved_path = path.or_else(|| {
           download_dests_for_finished
             .lock()
@@ -1698,8 +1863,8 @@ fn create_platform_view(
       _ => true,
     })
     .on_new_window(move |url, _features| {
-      // 仅对跨域 http(s) 弹窗转为新标签；同源弹窗（OAuth/CF 挑战等）保持原生行为，
-      // 避免破坏依赖 window 引用的回调通信。
+      // 娴犲懎顕捄銊ョ厵 http(s) 瀵湱鐛ユ潪顑胯礋閺傜増鐖ｇ粵鎾呯幢閸氬本绨鍦崶閿涘湦Auth/CF 閹告垶鍨粵澶涚礆娣囨繃瀵旈崢鐔烘晸鐞涘奔璐熼敍?
+      // 闁灝鍘ら惍鏉戞綎娓氭繆绂?window 瀵洜鏁ら惃鍕礀鐠嬪啴鈧矮淇婇妴?
       let parent_url = app_for_new_window
         .try_state::<PlatformViews>()
         .and_then(|views| {
@@ -1725,17 +1890,14 @@ fn create_platform_view(
         NewWindowResponse::Allow
       }
     })
-    .on_page_load(move |webview, payload| {
+    .initialization_script(&tab_interceptor_script(&storage_id, &platform_id))
+    .initialization_script(&format!(
+      "window.__POLYCHAT_TITLE_POLL__&&clearInterval(window.__POLYCHAT_TITLE_POLL__);window.__POLYCHAT_TITLE_POLL__=setInterval(()=>{{window.__TAURI_INTERNALS__?.invoke('update_platform_title',{{platformId:'{pid}',title:document.title||'',url:location.href||'',canGoBack:history.length>1,canGoForward:false}})}},1000);window.__TAURI_INTERNALS__?.invoke('update_platform_title',{{platformId:'{pid}',title:document.title||'',url:location.href||'',canGoBack:history.length>1,canGoForward:false}});",
+      pid = platform_id
+    ))
+    .on_page_load(move |_webview, payload| {
       let app_handle = app_for_load.clone();
       let platform_id = platform_for_load.clone();
-      let tab_js = tab_interceptor_script(&storage_id, &platform_id);
-      let title_js = "window.__POLYCHAT_TITLE_POLL__&&clearInterval(window.__POLYCHAT_TITLE_POLL__);window.__POLYCHAT_TITLE_POLL__=setInterval(()=>{window.__TAURI_INTERNALS__?.invoke('update_platform_title',{platformId:'".to_string()
-        + &platform_id
-        + "',title:document.title||'',url:location.href||'',canGoBack:history.length>1,canGoForward:false})},1000);window.__TAURI_INTERNALS__?.invoke('update_platform_title',{platformId:'"
-        + &platform_id
-        + "',title:document.title||'',url:location.href||'',canGoBack:history.length>1,canGoForward:false});";
-      let _ = webview.eval(&tab_js);
-      let _ = webview.eval(&title_js);
       let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
       if let Some(views) = app_handle.try_state::<PlatformViews>() {
         if let Ok(mut views) = views.0.lock() {
@@ -1748,6 +1910,16 @@ fn create_platform_view(
       }
     });
 
+  #[cfg(target_os = "windows")]
+  let webview = window
+    .add_child(
+      builder,
+      logical_position_from_bounds(&bounds),
+      logical_size_from_bounds(&bounds),
+    )
+    .map_err(|err| format!("failed to create webview: {err}"))?;
+
+  #[cfg(not(target_os = "windows"))]
   let webview = window
     .add_child(
       builder,
@@ -1757,7 +1929,7 @@ fn create_platform_view(
     .map_err(|err| format!("failed to create webview: {err}"))?;
   webview
     .show()
-    .map_err(|err| format!("failed to show webview: {err}"))?;
+    .map_err(|err| format!("failed to show initial webview: {err}"))?;
 
   let state = PlatformViewState {
     title: initial_title,
@@ -1768,9 +1940,20 @@ fn create_platform_view(
   };
 
   emit_platform_state(&app, &platform_id, &state);
-  let mut views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
-  views.insert(platform_id.clone(), PlatformView { webview, state });
-  Ok(get_state_payload(&platform_id, views.get(&platform_id).unwrap()))
+  let mut view_map = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+  view_map.insert(platform_id.clone(), PlatformView { webview, state });
+  let webview = view_map
+    .get(&platform_id)
+    .map(|view| view.webview.clone())
+    .ok_or_else(|| format!("platform view not found after create: {platform_id}"))?;
+  drop(view_map);
+
+  webview
+    .navigate(parsed_url)
+    .map_err(|err| format!("failed to navigate initial webview: {err}"))?;
+
+  let view_map = views.0.lock().map_err(|_| "platform view lock poisoned")?;
+  Ok(get_state_payload(&platform_id, view_map.get(&platform_id).unwrap()))
 }
 
 fn get_state_payload(platform_id: &str, view: &PlatformView) -> PlatformState {
@@ -1800,8 +1983,8 @@ fn show_platform_view(
   for (is_active, webview) in webviews {
     if is_active {
       webview.show().map_err(|err| err.to_string())?;
-      // 把焦点显式交给新显示的 WebView，避免按键事件继续投递到刚被隐藏的 WebView，
-      // 否则在 macOS 下连续触发快捷键时会"丢键"。
+      // 閹跺﹦鍔嶉悙瑙勬▔瀵繋姘︾紒娆愭煀閺勫墽銇氶惃?WebView閿涘矂浼╅崗宥嗗瘻闁款喕绨ㄦ禒鍓佹埛缂侇厽濮囬柅鎺戝煂閸掓俺顫﹂梾鎰閻?WebView閿?
+      // 閸氾箑鍨崷?macOS 娑撳绻涚紒顓⌒曢崣鎴濇彥閹圭兘鏁弮鏈电窗"娑撱垽鏁?閵?
       let _ = webview.set_focus();
     } else {
       webview.hide().map_err(|err| err.to_string())?;
@@ -1810,8 +1993,8 @@ fn show_platform_view(
   Ok(())
 }
 
-/// 分屏模式：同时显示 platform_ids 中的所有 WebView，隐藏其余。
-/// 只把焦点交给集合中的第一个（primary），避免多个 WebView 互相抢焦点。
+/// 閸掑棗鐫嗗Ο鈥崇础閿涙艾鎮撻弮鑸垫▔缁€?platform_ids 娑擃厾娈戦幍鈧張?WebView閿涘矂娈ｉ挊蹇撳従娴ｆ瑣鈧?
+/// 閸欘亝濡搁悞锔惧仯娴溿倗绮伴梿鍡楁値娑擃厾娈戠粭顑跨娑擃亷绱檖rimary閿涘绱濋柆鍨帳婢舵矮閲?WebView 娴滄帞娴夐幎銏㈠妽閻愬箍鈧?
 #[tauri::command]
 fn show_platform_views(
   views: tauri::State<'_, PlatformViews>,
@@ -1892,6 +2075,9 @@ fn set_platform_view_bounds(
   };
 
   if let Some(webview) = webview {
+    if !has_visible_bounds(&bounds) {
+      return Ok(());
+    }
     webview
       .set_bounds(rect_from_bounds(&window, bounds))
       .map_err(|err| err.to_string())?;
@@ -2011,6 +2197,23 @@ fn open_platform_tab(
 }
 
 #[tauri::command]
+fn install_platform_view_hooks(
+  app: AppHandle,
+  view_id: String,
+  platform_id: String,
+) -> Result<(), String> {
+  let label = frontend_platform_label(&view_id);
+  let webview = app
+    .get_webview(&label)
+    .ok_or_else(|| format!("platform view not found: {view_id}"))?;
+
+  webview
+    .eval(frontend_click_bridge_script(&platform_id, &view_id))
+    .map_err(|err| err.to_string())?;
+  Ok(())
+}
+
+#[tauri::command]
 fn quit_app(app: AppHandle) {
   app.exit(0);
 }
@@ -2035,19 +2238,23 @@ fn dispatch_shortcut(
 
 #[tauri::command]
 fn switch_conversation(
+  app: AppHandle,
   views: tauri::State<'_, PlatformViews>,
   platform_id: String,
   offset: i32,
 ) -> Result<(), String> {
-  eprintln!(
-    "[polychat] switch_conversation: platform={} offset={}",
-    platform_id, offset
-  );
-  let webview = {
+  let managed_webview = {
     let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
     views.get(&platform_id).map(|view| view.webview.clone())
-  }
-  .ok_or_else(|| format!("platform view not found: {platform_id}"))?;
+  };
+
+  let webview = if let Some(webview) = managed_webview {
+    webview
+  } else {
+    let label = frontend_platform_label(&platform_id);
+    app.get_webview(&label)
+      .ok_or_else(|| format!("platform view not found: {platform_id}"))?
+  };
 
   webview
     .eval(conversation_switch_script(offset))
@@ -2055,14 +2262,14 @@ fn switch_conversation(
   Ok(())
 }
 
-/// 生成「把文本填充进网页输入框」的注入脚本。
-/// `json_text` 必须是已经过 serde_json 编码的安全 JS 字符串字面量（含两端引号）。
-/// 按 brand 选择候选选择器，填充方式根据元素类型自适应：
-///   - textarea / input：用原型 value setter + dispatch input 事件（兼容 React 受控组件）
-///   - contenteditable：focus + 全选 + execCommand('insertText')
-/// 仅填充，不触发发送。找不到元素时调用 debug_log，静默不抛错。
+/// 閻㈢喐鍨氶妴灞惧Ω閺傚洦婀版繅顐㈠帠鏉╂稓缍夋い浣冪翻閸忋儲顢嬮妴宥囨畱濞夈劌鍙嗛懘姘拱閵?
+/// `json_text` 韫囧懘銆忛弰顖氬嚒缂佸繗绻?serde_json 缂傛牜鐖滈惃鍕暔閸?JS 鐎涙顑佹稉鎻掔摟闂堛垽鍣洪敍鍫濇儓娑撱倗顏鏇炲娇閿涘鈧?
+/// 閹?brand 闁瀚ㄩ崐娆撯偓澶愨偓澶嬪閸ｎ煉绱濇繅顐㈠帠閺傜懓绱￠弽瑙勫祦閸忓啰绀岀猾璇茬€烽懛顏堚偓鍌氱安閿?
+///   - textarea / input閿涙氨鏁ら崢鐔风€?value setter + dispatch input 娴滃娆㈤敍鍫濆悑鐎?React 閸欐甯剁紒鍕閿?
+///   - contenteditable閿涙瓲ocus + 閸忋劑鈧?+ execCommand('insertText')
+/// 娴犲懎锝為崗鍜冪礉娑撳秷袝閸欐垵褰傞柅浣碘偓鍌涘娑撳秴鍩岄崗鍐閺冩儼鐨熼悽?閿涘矂娼ゆ妯圭瑝閹舵盯鏁婇妴?
 fn fill_input_script(brand: &str, json_text: &str) -> String {
-  // 每个 brand 的候选选择器（best-effort，从精确到宽松回退）
+  // 濮ｅ繋閲?brand 閻ㄥ嫬鈧瑩鈧鈧瀚ㄩ崳顭掔礄best-effort閿涘奔绮犵划鍓р€橀崚鏉款啍閺夋儳娲栭柅鈧敍?
   let selectors: &[&str] = match brand {
     "chatgpt" => &[
       "#prompt-textarea",
@@ -2084,10 +2291,13 @@ fn fill_input_script(brand: &str, json_text: &str) -> String {
       "[contenteditable=\"true\"]",
     ],
     "qwen" => &[
+      "[contenteditable=\"true\"][data-placeholder]",
+      "div[contenteditable=\"true\"][role=\"textbox\"]",
+      "div.ProseMirror[contenteditable=\"true\"]",
+      "[contenteditable=\"true\"]",
       "textarea#chat-input",
       "textarea[placeholder]",
       "textarea",
-      "[contenteditable=\"true\"]",
     ],
     _ => &[
       "textarea",
@@ -2121,25 +2331,56 @@ fn fill_input_script(brand: &str, json_text: &str) -> String {
     }}
     return null;
   }}
-  function report(tag) {{
-    try {{
-      window.__TAURI_INTERNALS__.invoke('debug_log', {{ tag: tag, payload: brand }});
-    }} catch (e) {{}}
-  }}
   function sendEnter(el) {{
     function fire(type) {{
       el.dispatchEvent(new KeyboardEvent(type, {{
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-        bubbles: true, cancelable: true
+        bubbles: true, cancelable: true, composed: true
       }}));
     }}
     fire('keydown');
     fire('keypress');
     fire('keyup');
   }}
+  function fireInput(el, inputType, data) {{
+    try {{
+      el.dispatchEvent(new InputEvent('input', {{
+        inputType: inputType || 'insertText',
+        data: data || null,
+        bubbles: true,
+        cancelable: false,
+        composed: true
+      }}));
+    }} catch (_) {{
+      el.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: false }}));
+    }}
+  }}
+  function fireBeforeInput(el, inputType, data) {{
+    try {{
+      return el.dispatchEvent(new InputEvent('beforeinput', {{
+        inputType: inputType || 'insertText',
+        data: data || null,
+        bubbles: true,
+        cancelable: true,
+        composed: true
+      }}));
+    }} catch (_) {{
+      return true;
+    }}
+  }}
+  function placeCaretAtEnd(el) {{
+    try {{
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }} catch (_) {{}}
+  }}
   try {{
     var el = pick();
-    if (!el) {{ report('fill-miss'); return; }}
+    if (!el) {{ return; }}
     var tag = (el.tagName || '').toLowerCase();
     var filled = false;
     if (tag === 'textarea' || tag === 'input') {{
@@ -2149,51 +2390,62 @@ fn fill_input_script(brand: &str, json_text: &str) -> String {
       var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
       el.focus();
       setter.call(el, text);
-      el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+      fireInput(el, 'insertText', text);
+      el.dispatchEvent(new Event('change', {{ bubbles: true }}));
       filled = true;
     }} else if (el.isContentEditable) {{
       el.focus();
       var sel = window.getSelection();
-      sel.selectAllChildren(el);
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      fireBeforeInput(el, 'insertText', text);
       var ok = document.execCommand('insertText', false, text);
       if (!ok) {{
-        el.dispatchEvent(new InputEvent('beforeinput', {{
-          inputType: 'insertText', data: text, bubbles: true, cancelable: true
-        }}));
+        el.textContent = text;
+        placeCaretAtEnd(el);
       }}
+      fireInput(el, 'insertText', text);
+      el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+      el.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, cancelable: true, composed: true }}));
       filled = true;
-    }} else {{
-      report('fill-unknown-el');
-    }}
+    }} else {{}}
     if (filled) {{
-      // 延时再发送，给 React 受控组件的 value 更新留出时间
+      // 瀵よ埖妞傞崘宥呭絺闁緤绱濈紒?React 閸欐甯剁紒鍕閻?value 閺囧瓨鏌婇悾娆忓毉閺冨爼妫?
       setTimeout(function() {{
-        try {{ sendEnter(el); }} catch (e) {{ report('send-error'); }}
+        try {{ sendEnter(el); }} catch (e) {{}}
       }}, 120);
     }}
-  }} catch (e) {{
-    report('fill-error');
-  }}
+  }} catch (e) {{}}
 }})();"#
   )
 }
 
-/// 广播填充：把 text 填入指定平台 WebView 的输入框（不触发发送）。
-/// brand 用于分派各平台不同的 DOM 选择器（前端显式传入，跨 clone/重定向稳定）。
+/// 楠炴寧鎸辨繅顐㈠帠閿涙碍濡?text 婵夘偄鍙嗛幐鍥х暰楠炲啿褰?WebView 閻ㄥ嫯绶崗銉︻攱閿涘牅绗夌憴锕€褰傞崣鎴︹偓渚婄礆閵?
+/// brand 閻劋绨崚鍡樻烦閸氬嫬閽╅崣棰佺瑝閸氬瞼娈?DOM 闁瀚ㄩ崳顭掔礄閸撳秶顏弰鎯х础娴肩姴鍙嗛敍宀冩硶 clone/闁插秴鐣鹃崥鎴犌旂€规熬绱氶妴?
 #[tauri::command]
 fn fill_platform_input(
+  app: AppHandle,
   views: tauri::State<'_, PlatformViews>,
   platform_id: String,
   brand: String,
   text: String,
 ) -> Result<(), String> {
-  let webview = {
+  let managed_webview = {
     let views = views.0.lock().map_err(|_| "platform view lock poisoned")?;
     views.get(&platform_id).map(|view| view.webview.clone())
-  }
-  .ok_or_else(|| format!("platform view not found: {platform_id}"))?;
+  };
 
-  // 文本经 serde_json 编码为安全 JS 字符串字面量，杜绝 JS 注入
+  let webview = if let Some(webview) = managed_webview {
+    webview
+  } else {
+    let label = frontend_platform_label(&platform_id);
+    app.get_webview(&label)
+      .ok_or_else(|| format!("platform view not found: {platform_id}"))?
+  };
+
+  // 閺傚洦婀扮紒?serde_json 缂傛牜鐖滄稉鍝勭暔閸?JS 鐎涙顑佹稉鎻掔摟闂堛垽鍣洪敍灞炬建缂?JS 濞夈劌鍙?
   let json_text = serde_json::to_string(&text).map_err(|err| err.to_string())?;
   webview
     .eval(fill_input_script(&brand, &json_text))
@@ -2201,21 +2453,16 @@ fn fill_platform_input(
   Ok(())
 }
 
-/// 注入脚本里的诊断 sink：当 clipboard hook 或其它注入逻辑命中错误分支时，
-/// 把上下文打到 stderr 方便排查（只有失败路径调用，正常使用零开销）。
-#[tauri::command]
-fn debug_log(tag: String, payload: String) {
-  eprintln!("[polychat][probe][{}] {}", tag, payload);
-}
-
-/// 把 base64 编码的图片（PNG/JPEG/GIF 等任意 image crate 支持的格式）写入系统剪贴板。
-/// 解决 macOS WKWebView 拒绝 `navigator.clipboard.write(ClipboardItem)` 写图片的限制：
-/// 注入脚本拦截网页 clipboard.write，把图片二进制 base64 后传给本命令，由原生 arboard 写入。
+/// 濞夈劌鍙嗛懘姘拱闁插瞼娈戠拠濠冩焽 sink閿涙艾缍?clipboard hook 閹存牕鍙剧€瑰啯鏁為崗銉┾偓鏄忕帆閸涙垝鑵戦柨娆掝嚖閸掑棙鏁弮璁圭礉
+/// 閹跺﹣绗傛稉瀣瀮閹垫挸鍩?stderr 閺傞€涚┒閹烘帗鐓￠敍鍫濆涧閺堝銇戠拹銉ㄧ熅瀵板嫯鐨熼悽顭掔礉濮濓絽鐖舵担璺ㄦ暏闂嗚泛绱戦柨鈧敍澶堚偓?
+/// 閹?base64 缂傛牜鐖滈惃鍕禈閻楀浄绱橮NG/JPEG/GIF 缁涘鎹㈤幇?image crate 閺€顖涘瘮閻ㄥ嫭鐗稿蹇ョ礆閸愭瑥鍙嗙化鑽ょ埠閸擃亣鍒涢弶瑁も偓?
+/// 鐟欙絽鍠?macOS WKWebView 閹锋帞绮?`navigator.clipboard.write(ClipboardItem)` 閸愭瑥娴橀悧鍥╂畱闂勬劕鍩楅敍?
+/// 濞夈劌鍙嗛懘姘拱閹凤附鍩呯純鎴︺€?clipboard.write閿涘本濡搁崶鍓у娴滃矁绻橀崚?base64 閸氬簼绱剁紒娆愭拱閸涙垝鎶ら敍宀€鏁遍崢鐔烘晸 arboard 閸愭瑥鍙嗛妴?
 #[tauri::command]
 fn copy_image_to_clipboard(data_base64: String) -> Result<(), String> {
   use base64_decode_compat as decode;
   let bytes = decode(&data_base64).map_err(|e| format!("invalid base64: {e}"))?;
-  // arboard 要求 RGBA8 原始像素，所以先用 image crate 解码再喂进去
+  // arboard 鐟曚焦鐪?RGBA8 閸樼喎顫愰崓蹇曠閿涘本澧嶆禒銉ュ帥閻?image crate 鐟欙絿鐖滈崘宥呮澓鏉╂稑骞?
   let img = image::load_from_memory(&bytes).map_err(|e| format!("decode image failed: {e}"))?;
   let rgba = img.to_rgba8();
   let (width, height) = rgba.dimensions();
@@ -2227,18 +2474,12 @@ fn copy_image_to_clipboard(data_base64: String) -> Result<(), String> {
       bytes: std::borrow::Cow::Owned(rgba.into_raw()),
     })
     .map_err(|e| format!("clipboard set_image: {e}"))?;
-  eprintln!(
-    "[polychat] copy_image_to_clipboard ok: {}x{} bytes={}",
-    width,
-    height,
-    bytes.len()
-  );
   Ok(())
 }
 
-/// 接收来自注入脚本的 blob/data 下载请求。
-/// JS 端拦截了 a[download] 的点击、把内容读成 base64 传过来；
-/// 我们解码后写入系统 Downloads 目录，再发与原生下载同形态的完成事件。
+/// 閹恒儲鏁归弶銉ㄥ殰濞夈劌鍙嗛懘姘拱閻?blob/data 娑撳娴囩拠閿嬬湴閵?
+/// JS 缁旑垱瀚ら幋顏冪啊 a[download] 閻ㄥ嫮鍋ｉ崙姹団偓浣瑰Ω閸愬懎顔愮拠缁樺灇 base64 娴肩姾绻冮弶銉幢
+/// 閹存垳婊戠憴锝囩垳閸氬骸鍟撻崗銉ч兇缂?Downloads 閻╊喖缍嶉敍灞藉晙閸欐垳绗岄崢鐔烘晸娑撳娴囬崥灞借埌閹胶娈戠€瑰本鍨氭禍瀣╂閵?
 #[tauri::command]
 fn save_download_blob(
   app: AppHandle,
@@ -2260,12 +2501,6 @@ fn save_download_blob(
     .unwrap_or_else(|| "download".to_string());
   let target = unique_path(dir.join(sanitize_filename(&fname)));
   let success = fs::write(&target, &bytes).is_ok();
-  eprintln!(
-    "[polychat] save_download_blob: platform={} file={} success={}",
-    platform_id,
-    target.display(),
-    success
-  );
   let _ = app.emit(
     "platform-download-finished",
     DownloadFinishedEvent {
@@ -2279,8 +2514,8 @@ fn save_download_blob(
   Ok(())
 }
 
-/// JS 端拦截到下载、但读取/转码失败时调用，向前端发同形态的失败事件。
-/// 保证用户至少看到一次 toast，不会"点了没反应"。
+/// JS 缁旑垱瀚ら幋顏勫煂娑撳娴囬妴浣风稻鐠囪褰?鏉烆剛鐖滄径杈Е閺冩儼鐨熼悽顭掔礉閸氭垵澧犵粩顖氬絺閸氬苯鑸伴幀浣烘畱婢惰精瑙︽禍瀣╂閵?
+/// 娣囨繆鐦夐悽銊﹀煕閼峰啿鐨惇瀣煂娑撯偓濞?toast閿涘奔绗夋导?閻愰€涚啊濞屸€冲冀鎼?閵?
 #[tauri::command]
 fn report_download_error(
   app: AppHandle,
@@ -2293,12 +2528,6 @@ fn report_download_error(
     .clone()
     .filter(|s| !s.trim().is_empty())
     .unwrap_or_else(|| "download".to_string());
-  eprintln!(
-    "[polychat] download failed: platform={} file={} reason={}",
-    platform_id,
-    display_name,
-    reason.as_deref().unwrap_or("unknown")
-  );
   let _ = app.emit(
     "platform-download-finished",
     DownloadFinishedEvent {
@@ -2322,11 +2551,11 @@ fn sanitize_filename(name: &str) -> String {
     .collect()
 }
 
-/// 极简 base64 解码（不引入额外依赖）。
+/// 閺嬩胶鐣?base64 鐟欙絿鐖滈敍鍫滅瑝瀵洖鍙嗘０婵嗩樆娓氭繆绂嗛敍澶堚偓?
 fn base64_decode_compat(s: &str) -> Result<Vec<u8>, String> {
-  // 容忍换行/空白
+  // 鐎圭懓绻婇幑銏ｎ攽/缁岃櫣娅?
   let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-  // 去掉 data URL 前缀，例如 data:application/pdf;base64,xxxx
+  // 閸樼粯甯€ data URL 閸撳秶绱戦敍灞肩伐婵?data:application/pdf;base64,xxxx
   let payload = if let Some(idx) = cleaned.find(";base64,") {
     &cleaned[idx + ";base64,".len()..]
   } else {
@@ -2388,22 +2617,115 @@ fn build_app_menu<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<Menu<R>> {
     true,
     Some("CmdOrCtrl+Shift+]"),
   )?;
+  let mut switch_platform_items = Vec::new();
+  for index in 1..=9 {
+    switch_platform_items.push(MenuItem::with_id(
+      app,
+      format!("{MENU_ID_SWITCH_PLATFORM_PREFIX}{index}"),
+      format!("Switch Platform {index}"),
+      true,
+      Some(format!("CmdOrCtrl+{index}")),
+    )?);
+  }
   let polychat_menu = Submenu::with_id_and_items(
     app,
     "polychat-actions",
     "PolyChat",
     true,
-    &[&prev_conversation, &next_conversation],
+    &[
+      &switch_platform_items[0],
+      &switch_platform_items[1],
+      &switch_platform_items[2],
+      &switch_platform_items[3],
+      &switch_platform_items[4],
+      &switch_platform_items[5],
+      &switch_platform_items[6],
+      &switch_platform_items[7],
+      &switch_platform_items[8],
+      &prev_conversation,
+      &next_conversation,
+    ],
   )?;
   menu.append(&polychat_menu)?;
   Ok(menu)
 }
+
+#[cfg(target_os = "windows")]
+fn register_windows_platform_hotkeys(app: AppHandle, window: Window) {
+  let Ok(hwnd) = window.hwnd() else {
+    return;
+  };
+  let main_hwnd = hwnd.0 as isize;
+
+  thread::spawn(move || unsafe {
+    for index in 1..=9 {
+      let id = HOTKEY_SWITCH_PLATFORM_BASE_ID + index as i32;
+      let vk = b'0' as u32 + index as u32;
+      let _ = RegisterHotKey(std::ptr::null_mut(), id, MOD_CONTROL, vk);
+    }
+    let _ = RegisterHotKey(
+      std::ptr::null_mut(),
+      HOTKEY_PREV_CONVERSATION_ID,
+      MOD_CONTROL | MOD_SHIFT,
+      VK_OEM_4,
+    );
+    let _ = RegisterHotKey(
+      std::ptr::null_mut(),
+      HOTKEY_NEXT_CONVERSATION_ID,
+      MOD_CONTROL | MOD_SHIFT,
+      VK_OEM_6,
+    );
+
+    let mut msg: MSG = std::mem::zeroed();
+    while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+      if msg.message != WM_HOTKEY {
+        continue;
+      }
+
+      let id = msg.wParam as i32;
+
+      if GetForegroundWindow() as isize != main_hwnd {
+        continue;
+      }
+
+      if id == HOTKEY_PREV_CONVERSATION_ID || id == HOTKEY_NEXT_CONVERSATION_ID {
+        let _ = app.emit(
+          "polychat-shortcut",
+          ShortcutEvent {
+            action: "switch-conversation".to_string(),
+            index: None,
+            offset: Some(if id == HOTKEY_NEXT_CONVERSATION_ID { 1 } else { -1 }),
+          },
+        );
+        continue;
+      }
+
+      let index = id - HOTKEY_SWITCH_PLATFORM_BASE_ID;
+      if (1..=9).contains(&index) {
+        let _ = app.emit(
+          "polychat-shortcut",
+          ShortcutEvent {
+            action: "switch-platform".to_string(),
+            index: Some(index as u32),
+            offset: None,
+          },
+        );
+      }
+    }
+  });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn register_windows_platform_hotkeys(_app: AppHandle, _window: Window) {}
 
 pub fn run() {
   tauri::Builder::default()
     .manage(PlatformViews::default())
     .setup(|app| {
       app.set_menu(build_app_menu(app)?)?;
+      if let Some(window) = app.get_window("main") {
+        register_windows_platform_hotkeys(app.handle().clone(), window);
+      }
       Ok(())
     })
     .on_menu_event(|app, event| {
@@ -2411,7 +2733,6 @@ pub fn run() {
       if id == "quit" {
         app.exit(0);
       } else if id == MENU_ID_PREV_CONVERSATION {
-        eprintln!("[polychat] menu shortcut switch-conversation offset=-1");
         let _ = app.emit(
           "polychat-shortcut",
           ShortcutEvent {
@@ -2421,7 +2742,6 @@ pub fn run() {
           },
         );
       } else if id == MENU_ID_NEXT_CONVERSATION {
-        eprintln!("[polychat] menu shortcut switch-conversation offset=1");
         let _ = app.emit(
           "polychat-shortcut",
           ShortcutEvent {
@@ -2430,6 +2750,17 @@ pub fn run() {
             offset: Some(1),
           },
         );
+      } else if let Some(raw_index) = id.strip_prefix(MENU_ID_SWITCH_PLATFORM_PREFIX) {
+        if let Ok(index) = raw_index.parse::<u32>() {
+          let _ = app.emit(
+            "polychat-shortcut",
+            ShortcutEvent {
+              action: "switch-platform".to_string(),
+              index: Some(index),
+              offset: None,
+            },
+          );
+        }
       }
     })
     .invoke_handler(tauri::generate_handler![
@@ -2446,14 +2777,26 @@ pub fn run() {
       get_platform_state,
       update_platform_title,
       open_platform_tab,
+      install_platform_view_hooks,
       quit_app,
       dispatch_shortcut,
       switch_conversation,
-      debug_log,
       copy_image_to_clipboard,
       save_download_blob,
       report_download_error
     ])
+    .on_window_event(|window, event| {
+      if let tauri::WindowEvent::CloseRequested { .. } = event {
+        if let Some(views) = window.app_handle().try_state::<PlatformViews>() {
+          if let Ok(mut views) = views.0.lock() {
+            for (_id, view) in views.drain() {
+              let _ = view.webview.close();
+            }
+          }
+        }
+        window.app_handle().exit(0);
+      }
+    })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

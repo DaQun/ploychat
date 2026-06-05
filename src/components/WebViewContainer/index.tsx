@@ -119,6 +119,8 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   ])
   const [activeViewId, setActiveViewId] = useState(platform.id)
   const [states, setStates] = useState<Record<string, PlatformViewState>>({})
+  const [layoutReady, setLayoutReady] = useState(false)
+  const [viewErrors, setViewErrors] = useState<Record<string, string>>({})
 
   // 用 ref 追踪 isActive，避免事件监听器闭包捕获旧值
   const isActiveRef = useRef(isActive)
@@ -132,6 +134,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   const activeState = states[activeViewId]
   const activeTab = tabs.find(tab => tab.id === activeViewId) ?? tabs[0]
   const loading = activeState?.loading ?? true
+  const viewError = viewErrors[activeViewId]
   const title = activeState?.title || activeTab?.title || platform.name
   const canGoBack = activeState?.canGoBack ?? false
   const canGoForward = activeState?.canGoForward ?? false
@@ -144,6 +147,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
     if (!wrapper) return null
 
     const rect = wrapper.getBoundingClientRect()
+    if (rect.width < 16 || rect.height < 16) return null
 
     return {
       x: rect.left,
@@ -154,21 +158,9 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
     }
   }, [])
 
-  const getHiddenBounds = useCallback((): ViewBounds => ({
-    x: -10000,
-    y: -10000,
-    width: 1,
-    height: 1,
-    viewportHeight: window.innerHeight,
-  }), [])
-
   const getViewBounds = useCallback((viewId: string): ViewBounds | null => {
-    const bounds = getBounds()
-    if (!bounds) return null
-
-    const loadingView = states[viewId]?.loading ?? true
-    return loadingView && !readyViewIdsRef.current.has(viewId) ? getHiddenBounds() : bounds
-  }, [getBounds, getHiddenBounds, states])
+    return getBounds()
+  }, [getBounds])
 
   const syncBounds = useCallback(async () => {
     if (createdViewIdsRef.current.size === 0) return
@@ -183,6 +175,35 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
       // Tauri runtime unavailable in plain browser previews.
     }
   }, [getViewBounds])
+
+  useEffect(() => {
+    if (layoutReady) return
+
+    let resizeObserver: ResizeObserver | null = null
+    let frameId = 0
+
+    const checkReady = () => {
+      window.cancelAnimationFrame(frameId)
+      frameId = window.requestAnimationFrame(() => {
+        if (getBounds()) {
+          setLayoutReady(true)
+        }
+      })
+    }
+
+    checkReady()
+    if (wrapperRef.current) {
+      resizeObserver = new ResizeObserver(checkReady)
+      resizeObserver.observe(wrapperRef.current)
+    }
+    window.addEventListener('resize', checkReady)
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', checkReady)
+    }
+  }, [getBounds, layoutReady])
 
   useEffect(() => {
     const previous = primaryConfigRef.current
@@ -224,6 +245,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   }, [platform.id, platform.name, platform.url, platform.userAgent])
 
   const ensureView = useCallback((tab: PlatformTab) => {
+    if (!layoutReady) return
     const bounds = getViewBounds(tab.id) ?? getBounds()
     if (!bounds || createdViewIdsRef.current.has(tab.id)) return
 
@@ -235,13 +257,33 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
       // 不传默认值，让 Rust 端按操作系统选 UA（macOS=Safari，Win=Edge，Linux=Chrome）
       platform.userAgent || undefined,
       platform.id
-    ).then(state => {
+    ).then(async state => {
       createdViewIdsRef.current.add(tab.id)
+      setViewErrors(prev => {
+        const next = { ...prev }
+        delete next[tab.id]
+        return next
+      })
       setStates(prev => ({ ...prev, [tab.id]: state }))
       if (!multiVisibleRef.current && isActiveRef.current && activeViewId === tab.id) {
-        return showPlatformView(tab.id)
+        const latestBounds = getViewBounds(tab.id) ?? bounds
+        await setPlatformViewBounds(tab.id, latestBounds)
+        await showPlatformView(tab.id)
+        readyViewIdsRef.current.add(tab.id)
+        setStates(prev => ({
+          ...prev,
+          [tab.id]: {
+            ...(prev[tab.id] ?? state),
+            loading: false,
+          },
+        }))
+        if (tab.primary) {
+          onPlatformLoaded?.(platform.id)
+        }
       }
-    }).catch(() => {
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      setViewErrors(prev => ({ ...prev, [tab.id]: message || 'Failed to create webview' }))
       setStates(prev => ({
         ...prev,
         [tab.id]: {
@@ -254,7 +296,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
         },
       }))
     })
-  }, [activeViewId, getBounds, getViewBounds, platform.id, platform.userAgent])
+  }, [activeViewId, getBounds, getViewBounds, layoutReady, onPlatformLoaded, platform.id, platform.userAgent])
 
   // 监听尺寸变化，native webview 会在平台首次激活时创建。
   useEffect(() => {
@@ -281,7 +323,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   }, [syncBounds])
 
   useEffect(() => {
-    if (isActive) {
+    if (isActive && layoutReady) {
       if (activeTab) ensureView(activeTab)
       syncBounds()
       if (!multiVisible) {
@@ -293,6 +335,7 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
     activeViewId,
     ensureView,
     isActive,
+    layoutReady,
     multiVisible,
     syncBounds,
   ])
@@ -304,22 +347,48 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
   }, [activeViewId, isActive, loading, showTabs, syncBounds])
 
   useEffect(() => {
+    if (!isActive || !createdViewIdsRef.current.has(activeViewId) || readyViewIdsRef.current.has(activeViewId)) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (readyViewIdsRef.current.has(activeViewId)) return
+      setStates(prev => {
+        const state = prev[activeViewId]
+        if (!state || !state.loading) return prev
+        return {
+          ...prev,
+          [activeViewId]: {
+            ...state,
+            loading: false,
+          },
+        }
+      })
+    }, 12000)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [activeViewId, isActive])
+
+  useEffect(() => {
     let cleanup: (() => void) | undefined
 
     onPlatformStateChanged(state => {
       if (state.platformId !== platform.id && !state.platformId.startsWith(`${platform.id}__tab_`)) return
 
-      const newTitle = state.title || platform.name
-      if (!state.loading) {
+      const nextState = readyViewIdsRef.current.has(state.platformId) && state.loading
+        ? { ...state, loading: false }
+        : state
+      const newTitle = nextState.title || platform.name
+      if (!nextState.loading) {
         readyViewIdsRef.current.add(state.platformId)
         if (state.platformId === platform.id) {
           onPlatformLoaded?.(platform.id)
         }
       }
-      setStates(prev => ({ ...prev, [state.platformId]: state }))
+      setStates(prev => ({ ...prev, [state.platformId]: nextState }))
       setTabs(prev => prev.map(tab =>
         tab.id === state.platformId
-          ? { ...tab, title: newTitle, url: state.url || tab.url }
+          ? { ...tab, title: newTitle, url: nextState.url || tab.url }
           : tab
       ))
 
@@ -660,6 +729,11 @@ const WebViewContainer: React.FC<WebViewContainerProps> = ({ platform, isActive,
 
       {/* webview */}
       <div ref={wrapperRef} className="webview-wrapper">
+        {viewError && (
+          <div className="webview-error-overlay">
+            WebView 创建失败: {viewError}
+          </div>
+        )}
         <div className="webview-placeholder">
           {loading ? '正在加载...' : '页面由系统 WebView 渲染'}
         </div>

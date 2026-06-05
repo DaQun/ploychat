@@ -256,21 +256,6 @@ const SettingsModal: React.FC = () => {
 
             <div className="settings-item">
               <div className="settings-item-info">
-                <span className="settings-item-label">启动时最小化到托盘</span>
-                <span className="settings-item-desc">打开应用时自动最小化到系统托盘</span>
-              </div>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={config.minimizeToTray}
-                  onChange={e => updateConfig({ minimizeToTray: e.target.checked })}
-                />
-                <span className="toggle-slider"></span>
-              </label>
-            </div>
-
-            <div className="settings-item">
-              <div className="settings-item-info">
                 <span className="settings-item-label">启用分屏与广播</span>
                 <span className="settings-item-desc">同时并排多个平台，并支持一键广播提问</span>
               </div>

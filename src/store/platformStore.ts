@@ -11,6 +11,7 @@ const STORAGE_KEY_SPLIT = 'polychat-split-platforms'
 const STORAGE_KEY_TEMPLATES = 'polychat-prompt-templates'
 
 export type LayoutMode = 'single' | 'split'
+type JsonRecord = Record<string, unknown>
 
 interface PlatformStore {
   // 平台列表
@@ -59,6 +60,83 @@ function loadFromStorage<T>(key: string, defaultValue: T): T {
   }
 }
 
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isLayoutMode(value: unknown): value is LayoutMode {
+  return value === 'single' || value === 'split'
+}
+
+function normalizePlatform(value: unknown): Platform | null {
+  if (!isRecord(value)) return null
+  if (typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.url !== 'string') {
+    return null
+  }
+
+  const iconType =
+    value.iconType === 'emoji' || value.iconType === 'url' || value.iconType === 'favicon'
+      ? value.iconType
+      : 'favicon'
+
+  return {
+    id: value.id,
+    name: value.name,
+    url: value.url,
+    icon: typeof value.icon === 'string' ? value.icon : value.url,
+    iconType,
+    enabled: typeof value.enabled === 'boolean' ? value.enabled : true,
+    order: typeof value.order === 'number' && Number.isFinite(value.order) ? value.order : 0,
+    description: typeof value.description === 'string' ? value.description : undefined,
+    userAgent: typeof value.userAgent === 'string' ? value.userAgent : undefined,
+    injectScript: typeof value.injectScript === 'string' ? value.injectScript : undefined,
+  }
+}
+
+function normalizePlatforms(value: unknown): Platform[] {
+  if (!Array.isArray(value)) return DEFAULT_PLATFORMS
+
+  const normalized = value
+    .map(normalizePlatform)
+    .filter((platform): platform is Platform => Boolean(platform))
+
+  return normalized.length > 0 ? normalized : DEFAULT_PLATFORMS
+}
+
+function normalizeConfig(value: unknown): AppConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    ...(isRecord(value) ? value : {}),
+  }
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function normalizePromptTemplates(value: unknown): PromptTemplate[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap(item => {
+    if (!isRecord(item)) return []
+    if (
+      typeof item.id !== 'string' ||
+      typeof item.title !== 'string' ||
+      typeof item.content !== 'string' ||
+      typeof item.createdAt !== 'number'
+    ) {
+      return []
+    }
+
+    return [{
+      id: item.id,
+      title: item.title,
+      content: item.content,
+      createdAt: item.createdAt,
+    }]
+  })
+}
+
 // 保存到 localStorage
 function saveToStorage<T>(key: string, value: T) {
   try {
@@ -91,11 +169,12 @@ function migratePlatforms(stored: Platform[]): Platform[] {
 
 export const usePlatformStore = create<PlatformStore>((set, get) => {
   // 加载持久化数据
-  const rawPlatforms = loadFromStorage<Platform[]>(STORAGE_KEY_PLATFORMS, DEFAULT_PLATFORMS)
+  const rawPlatforms = normalizePlatforms(loadFromStorage<unknown>(STORAGE_KEY_PLATFORMS, DEFAULT_PLATFORMS))
   const savedPlatforms = migratePlatforms(rawPlatforms)
   saveToStorage(STORAGE_KEY_PLATFORMS, savedPlatforms)
-  const savedConfig = loadFromStorage<AppConfig>(STORAGE_KEY_CONFIG, DEFAULT_CONFIG)
-  const savedActiveId = loadFromStorage<string | null>(STORAGE_KEY_ACTIVE, null)
+  const savedConfig = normalizeConfig(loadFromStorage<unknown>(STORAGE_KEY_CONFIG, DEFAULT_CONFIG))
+  const rawActiveId = loadFromStorage<unknown>(STORAGE_KEY_ACTIVE, null)
+  const savedActiveId = typeof rawActiveId === 'string' ? rawActiveId : null
 
   // 确定默认激活的平台
   let initialActiveId = savedActiveId
@@ -104,16 +183,17 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
   }
 
   // 加载布局模式与分屏集合
-  const savedLayout = loadFromStorage<LayoutMode>(STORAGE_KEY_LAYOUT, 'single')
+  const rawLayout = loadFromStorage<unknown>(STORAGE_KEY_LAYOUT, 'single')
+  const savedLayout = isLayoutMode(rawLayout) ? rawLayout : 'single'
   const enabledIdSet = new Set(savedPlatforms.filter(p => p.enabled).map(p => p.id))
-  const rawSplit = loadFromStorage<string[]>(STORAGE_KEY_SPLIT, [])
+  const rawSplit = normalizeStringArray(loadFromStorage<unknown>(STORAGE_KEY_SPLIT, []))
   let initialSplitIds = rawSplit.filter(id => enabledIdSet.has(id))
   if (initialSplitIds.length === 0 && initialActiveId) {
     initialSplitIds = [initialActiveId]
   }
 
   // 加载 Prompt 模板库
-  const savedTemplates = loadFromStorage<PromptTemplate[]>(STORAGE_KEY_TEMPLATES, [])
+  const savedTemplates = normalizePromptTemplates(loadFromStorage<unknown>(STORAGE_KEY_TEMPLATES, []))
 
   return {
     platforms: savedPlatforms,

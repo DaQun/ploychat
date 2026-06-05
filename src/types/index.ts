@@ -32,8 +32,6 @@ export interface AppConfig {
   lastPlatformId?: string
   /** 主题: light | dark | system */
   theme: 'light' | 'dark' | 'system'
-  /** 启动时是否最小化到托盘 */
-  minimizeToTray: boolean
   /** 是否启用分屏与广播功能（默认关闭） */
   enableSplitView?: boolean
 }
