@@ -108,6 +108,21 @@ npm run tauri:build:dmg  # macOS DMG 打包
 - **WebView 调试**：需在 `lib.rs` 中为特定平台的 WebView 启用开发者工具
 - **清除平台数据**：设置弹窗中「清除登录状态」，或直接删除 `app_data_dir/platforms/{id}/` 目录
 
+### 登录状态持久化
+
+**macOS / Linux**：
+- 每个平台有独立的数据目录（`app_data_dir/platforms/{id}/`）
+- Cookie、localStorage、sessionStorage 完全隔离
+- 关闭应用后登录状态**会保留**
+- 支持同一平台创建多个"分身"，各自独立登录
+
+**Windows 已知限制**：
+- WebView2 使用默认 profile，无法为每个平台分配独立的持久化存储
+- **主平台**（非克隆）：登录状态会保留
+- **克隆平台**（通过"复制"创建）：使用无痕模式，登录状态**关闭后会丢失**
+- 同一网站的多个标签会共享登录状态（如两个 ChatGPT 标签登录会互相影响）
+- 这是 Tauri v2 + WebView2 的技术限制，暂无完美解决方案
+
 ## 编码规范
 
 - 文件名: kebab-case (`platformStore.ts`, `AddPlatformModal/`)

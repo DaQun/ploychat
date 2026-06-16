@@ -58,6 +58,8 @@ function rootPlatformIdForView(viewId: string) {
 }
 
 function shouldUseEphemeralFrontendStorage(platformId: string, storageId?: string) {
+  // Windows 平台：主平台使用持久化存储，克隆平台使用无痕模式避免登录冲突
+  // 注意：无痕模式下登录状态不持久化，这是 Tauri WebView2 在 Windows 的已知限制
   const rootId = storageId ?? rootPlatformIdForView(platformId)
   return rootId.includes('__clone_')
 }
@@ -172,6 +174,7 @@ async function createFrontendPlatformView(
     dragDropEnabled: false,
     // Windows 前端 WebView 暂无独立 data directory 选项。复制平台用无痕
     // profile，避免同域平台继承原平台 Cookie/localStorage。
+    // 注：当前已禁用前端 WebView，统一使用 Rust 后端以支持持久化存储
     incognito: shouldUseEphemeralFrontendStorage(platformId, storageId),
     ...(userAgent ? { userAgent } : {}),
   })

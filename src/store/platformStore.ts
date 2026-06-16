@@ -274,6 +274,19 @@ export const usePlatformStore = create<PlatformStore>((set, get) => {
       const source = platforms.find(p => p.id === id)
       if (!source) return
 
+      // Windows 平台提示
+      if (typeof window !== 'undefined' && /Windows/i.test(navigator.userAgent)) {
+        const confirmed = window.confirm(
+          'Windows 平台限制说明\n\n' +
+          '由于 Windows WebView2 的技术限制，克隆平台使用无痕模式，关闭应用后登录状态将会丢失。\n\n' +
+          '建议方案：\n' +
+          '  • 使用平台自带的账号切换功能\n' +
+          '  • 或在浏览器中打开进行多账号管理\n\n' +
+          '是否继续创建克隆平台？'
+        )
+        if (!confirmed) return
+      }
+
       const siblingCount = platforms.filter(p =>
         p.id === source.id || p.id.startsWith(`${source.id}__clone_`) || p.url === source.url
       ).length
